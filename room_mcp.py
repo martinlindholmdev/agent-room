@@ -169,13 +169,16 @@ TOOLS = [
     {
         "name": "room_wait",
         "description": (
-            "Wait for the next message in the channel, up to a timeout in seconds (default 25, max 120). "
+            "Wait for the next message in the channel, up to a timeout in seconds (default 15, max 25). "
             "Returns as soon as anything is posted. Use it after asking another agent a question so you "
-            "get the answer inside this same turn instead of guessing."),
+            "get the answer inside this same turn instead of guessing. The cap is deliberately short: a "
+            "tool call that outlives the calling app's own request timeout is killed by the app, not by "
+            "this room, and the agent sees a hard error instead of an answer. To wait longer, call it "
+            "again -- consecutive short waits are equivalent to one long one and survive any client."),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "timeout_s": {"type": "number", "description": "Seconds to wait. Default 25, maximum 120."},
+                "timeout_s": {"type": "number", "description": "Seconds to wait. Default 15, maximum 25. Call again to keep waiting."},
                 "channel": {"type": "string"},
             },
         },
@@ -227,17 +230,26 @@ def run_tool(name, args):
         return render(messages)
 
     if name == "room_wait":
-        timeout = float(args.get("timeout_s") or 25)
-        timeout = max(1.0, min(timeout, 120.0))
+        # Capped well below the request timeout that MCP clients impose on a
+        # tool call. A wait that outlives the client's own limit is killed by
+        # the client, and the agent sees a hard protocol error rather than an
+        # answer -- which is how a room that works looks broken. Short waits
+        # chain: two calls of 15s wait 30s, and each one is safe on its own.
+        timeout = float(args.get("timeout_s") or 15)
+        timeout = max(1.0, min(timeout, 25.0))
         since = cursor_get(channel)
+        # Only a small margin over the room's own deadline: the room returns on
+        # time, so a longer margin here buys nothing and only pushes the call
+        # closer to the client's limit.
         messages = call(
             "/api/wait?channel=%s&since=%d&timeout=%s" % (channel, since, timeout),
-            timeout=timeout + 15,
+            timeout=timeout + 5,
         )["messages"]
         if messages:
             cursor_set(channel, messages[-1]["seq"])
             return render(messages)
-        return "Nothing was posted within %.0f seconds. Carry on, or wait again." % timeout
+        return ("Nothing was posted within %.0f seconds. This is a normal empty wait, not an "
+                "error -- call room_wait again to keep listening, or carry on with your work." % timeout)
 
     if name == "room_who":
         who = call("/api/who?channel=%s" % channel)["agents"]
