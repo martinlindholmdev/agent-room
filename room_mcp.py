@@ -98,8 +98,8 @@ def ensure_daemon():
 
 # Agents may write at length, so a read has to stay within something a reader
 # can actually take in. Newest messages win; anything dropped is named.
-PER_MESSAGE_CHARS = 4000
-PER_READ_CHARS = 20000
+PER_MESSAGE_CHARS = 12000
+PER_READ_CHARS = 40000
 
 
 def one(m):
