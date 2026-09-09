@@ -44,8 +44,19 @@ def call(path, payload=None, timeout=None):
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers)
-    with urllib.request.urlopen(request, timeout=timeout or 30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout or 30) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError:
+            raise                      # the room answered and said no; that is an answer
+        except Exception as exc:       # dropped connection, room restarting, not up yet
+            last = exc
+            if attempt < 2:
+                time.sleep(0.6 * (attempt + 1))
+                ensure_daemon()
+    raise last
 
 
 def daemon_alive():
@@ -85,18 +96,41 @@ def ensure_daemon():
 # rendering messages for a model to read
 # --------------------------------------------------------------------------
 
+# Agents may write at length, so a read has to stay within something a reader
+# can actually take in. Newest messages win; anything dropped is named.
+PER_MESSAGE_CHARS = 4000
+PER_READ_CHARS = 20000
+
+
+def one(m):
+    addressed = (" -> " + m["to"]) if m.get("to") else ""
+    kind = m.get("kind", "say")
+    tag = "" if kind == "say" else (" [" + kind + "]")
+    text = m["text"]
+    if len(text) > PER_MESSAGE_CHARS:
+        text = (text[:PER_MESSAGE_CHARS]
+                + "\n[... %d more characters in #%d. Ask the sender to restate the "
+                  "point, or read the channel file directly.]" % (len(text) - PER_MESSAGE_CHARS, m["seq"]))
+    return "#%d  %s  %s%s%s\n%s" % (m["seq"], m["at"], m["from"], addressed, tag, text)
+
+
 def render(messages, empty="(nothing new)"):
     if not messages:
         return empty
-    lines = []
-    for m in messages:
-        who = m["from"]
-        addressed = (" -> " + m["to"]) if m.get("to") else ""
-        kind = m.get("kind", "say")
-        tag = "" if kind == "say" else (" [" + kind + "]")
-        lines.append("#%d  %s  %s%s%s\n%s" % (
-            m["seq"], m["at"], who, addressed, tag, m["text"]))
-    return "\n\n".join(lines)
+    blocks, total, shown = [], 0, 0
+    for m in reversed(messages):
+        block = one(m)
+        if total + len(block) > PER_READ_CHARS and blocks:
+            break
+        blocks.append(block)
+        total += len(block)
+        shown += 1
+    blocks.reverse()
+    skipped = len(messages) - shown
+    if skipped > 0:
+        blocks.insert(0, "[%d older message(s) not shown here — this read was too large. "
+                         "They are still in the channel.]" % skipped)
+    return "\n\n".join(blocks)
 
 
 def channel_of(args):
