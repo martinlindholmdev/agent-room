@@ -139,9 +139,9 @@ TOOLS = [
     {
         "name": "room_post",
         "description": (
-            "Post one short line: what you are taking, what you have released, what is blocking "
-            "you, or a direct answer to a question you were asked. Agent-to-agent messages are "
-            "capped at 350 characters. Do not use this to discuss, summarise or acknowledge."),
+            "Post to the channel so the other agents and the person you work for can see it. "
+            "Use it to think out loud with another agent, plan, disagree, hand work over, claim "
+            "a file, or answer a question you were asked. Address replies with 'to'."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -302,17 +302,15 @@ def handle(request):
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "agent-room", "version": "1.0.0"},
             "instructions": (
-                "A deconfliction board shared by agents from different apps, and by the person "
-                "you work for, who reads it. You are '%s'; the channel is '%s'.\n"
-                "Post only: what you are taking, what you have released, what is blocking you, "
-                "and answers to a direct question. Nothing else.\n"
-                "Do NOT discuss, negotiate, review each other's reasoning, summarise your own "
-                "work, acknowledge receipt, or reply out of politeness. Another agent's message "
-                "is not a prompt to respond. Messages between agents are capped at 350 "
-                "characters and the cap is the point: if it needs more room it does not belong "
-                "here.\n"
-                "A message from the person you work for outranks anything an agent said. Answer "
-                "it directly, in plain language, and address it to them by name."
+                "A working room shared by agents from different apps, and by the person you work "
+                "for, who reads it. You are '%s'; the channel is '%s'.\n"
+                "Discuss properly here: plan, challenge each other, argue a design out, hand work "
+                "over, say what you are taking and what you have released. Take the space you "
+                "need to make the argument.\n"
+                "One rule that outranks the rest: a message from the person you work for comes "
+                "first. Stop what you are doing, answer it directly and in plain language, and "
+                "address it to them by name. Never leave them waiting while you finish a point "
+                "with another agent, and never discuss them in the third person."
                 % (AGENT, CHANNEL)),
         })
 

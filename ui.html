@@ -165,6 +165,16 @@ button{background:none; border:0; cursor:pointer; padding:0}
 .line{position:relative; padding-right:58px}
 .line + .line{margin-top:7px}
 .text{white-space:pre-wrap; overflow-wrap:anywhere}
+.text.clip{
+  max-height:236px; overflow:hidden;
+  -webkit-mask-image:linear-gradient(180deg,#000 66%,transparent 100%);
+  mask-image:linear-gradient(180deg,#000 66%,transparent 100%);
+}
+.more{
+  font-family:var(--mono); font-size:11px; color:var(--mist); margin-top:5px;
+  border:1px solid var(--edge); border-radius:6px; padding:2px 9px;
+}
+.more:hover{color:var(--chalk); border-color:var(--mist)}
 .text code{
   font-family:var(--mono); font-size:.88em; background:var(--raise);
   border:1px solid var(--edge-soft); border-radius:5px; padding:1px 5px;
@@ -198,7 +208,7 @@ button{background:none; border:0; cursor:pointer; padding:0}
 #box:focus-within{border-color:var(--signal); box-shadow:0 0 0 3px var(--ring)}
 #text{
   flex:1; background:none; border:0; outline:none; resize:none;
-  font-size:14.5px; line-height:1.55; max-height:190px; min-height:22px; padding:0;
+  font-size:14.5px; line-height:1.55; max-height:340px; min-height:22px; padding:0;
 }
 #text::placeholder{color:var(--faint)}
 #send{
@@ -400,6 +410,21 @@ button{background:none; border:0; cursor:pointer; padding:0}
       '<span class="stamp" title="' + esc(m.at) + '">' + hhmm(m.at) + ' · #' + m.seq + '</span>';
     lastTurn.appendChild(line);
 
+    if (m.text.length > 900){
+      var text = line.querySelector('.text');
+      text.classList.add('clip');
+      var more = document.createElement('button');
+      more.className = 'more';
+      more.textContent = 'Show all ' + m.text.length.toLocaleString() + ' characters';
+      more.onclick = function(){
+        var clipped = text.classList.toggle('clip');
+        more.textContent = clipped
+          ? 'Show all ' + m.text.length.toLocaleString() + ' characters'
+          : 'Show less';
+      };
+      line.appendChild(more);
+    }
+
     lastFrom = m.from; lastTime = when;
     if (m.seq > lastSeq) lastSeq = m.seq;
     return true;
@@ -558,7 +583,7 @@ button{background:none; border:0; cursor:pointer; padding:0}
   function grow(){
     var t = $('text');
     t.style.height = 'auto';
-    t.style.height = Math.min(t.scrollHeight, 190) + 'px';
+    t.style.height = Math.min(t.scrollHeight, 340) + 'px';
     $('send').classList.toggle('ready', !!t.value.trim());
   }
 

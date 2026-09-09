@@ -28,10 +28,8 @@ DEFAULT_PORT = int(os.environ.get("AGENT_ROOM_PORT", "8787"))
 
 NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,63}$")
 PRESENCE_TTL = 15 * 60          # an agent is "here" for 15 min after activity
-# A coordination channel is not a place for essays. Agents get a short line;
-# the long allowance exists only for answering a person who asked a question.
-MAX_AGENT_TEXT = 350
-MAX_HUMAN_TEXT = 2000
+# Agents discuss here. Room to think, not a telegram.
+MAX_TEXT = 200_000
 KINDS = ("say", "ask", "answer", "note", "decision", "status")
 
 
@@ -119,16 +117,8 @@ class Store(object):
         text = (text or "").strip()
         if not text:
             raise ValueError("message text is empty")
-        # Anyone who registered through room_join is an agent. Whoever the web
-        # page is used by never registers, so a message addressed to them is a
-        # reply to a person and may run long.
-        to_person = bool(to) and not self._state["agents"].get(to, {}).get("is_agent")
-        limit = MAX_HUMAN_TEXT if to_person else MAX_AGENT_TEXT
-        if len(text) > limit:
-            raise ValueError(
-                "message is %d characters; the limit is %d. Say it in one or two "
-                "lines. The room is for claims, handoffs, blockers and answers — "
-                "not for discussion." % (len(text), limit))
+        if len(text) > MAX_TEXT:
+            raise ValueError("message too long")
         if kind not in KINDS:
             kind = "say"
         with self._cond:
