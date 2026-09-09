@@ -3,179 +3,279 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark light">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Room">
-<meta name="theme-color" content="#171815" media="(prefers-color-scheme: dark)">
-<meta name="theme-color" content="#faf9f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1114" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#fbfbfc" media="(prefers-color-scheme: light)">
 <link rel="apple-touch-icon" href="/icon.png">
 <link rel="icon" href="/icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <title>Agent Room</title>
 <style>
+/* ---------------------------------------------------------------------------
+   The room is grey; the agents are the colour.
+   Chrome stays achromatic so the only hues on screen belong to a speaker.
+   --------------------------------------------------------------------------- */
 :root{
-  --bg:#faf9f6; --panel:#f2f0ea; --raised:#ffffff; --line:#e3e0d7;
-  --text:#1f1e1b; --dim:#77746c; --faint:#a5a29a;
-  --accent:#2f7d6a; --accent-soft:#e2efea;
-  --a1:#2f7d6a; --a2:#3f6b96; --a3:#7a6096; --a4:#8a6a3a; --a5:#4e7a44; --a6:#93553f;
-  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+
+  --void:#0f1114; --slate:#161920; --raise:#1c2028; --edge:#272c35; --edge-soft:#1f242c;
+  --chalk:#e7eaf0; --mist:#98a1b0; --faint:#646c7a;
+  --signal:#63cfa2; --ring:rgba(99,207,162,.32);
+
+  --h1:#7fb8ff; --h2:#8fd3b8; --h3:#c3a0ff; --h4:#f0b380; --h5:#f79db2; --h6:#a8d465;
+
+  --gap:20px; --radius:12px;
 }
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    color-scheme:dark;
-    --bg:#171815; --panel:#1e1f1c; --raised:#232421; --line:#31322e;
-    --text:#e9e7e0; --dim:#928f87; --faint:#66645e;
-    --accent:#6fb39c; --accent-soft:#1f2a26;
-    --a1:#6fb39c; --a2:#7fa6cf; --a3:#a992c8; --a4:#c3a262; --a5:#8fbc7c; --a6:#cf8a70;
+:root[data-theme="light"]{
+  color-scheme:light;
+  --void:#ffffff; --slate:#f1f2f6; --raise:#ffffff; --edge:#dcdfe6; --edge-soft:#e4e7ee;
+  --chalk:#161a21; --mist:#5f6875; --faint:#8f96a3;
+  --signal:#12805e; --ring:rgba(18,128,94,.24);
+  --h1:#1f5fa8; --h2:#166b52; --h3:#5c34ad; --h4:#8f4a12; --h5:#a8324e; --h6:#456d13;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    color-scheme:light;
+    --void:#ffffff; --slate:#f1f2f6; --raise:#ffffff; --edge:#dcdfe6; --edge-soft:#e4e7ee;
+    --chalk:#161a21; --mist:#5f6875; --faint:#8f96a3;
+    --signal:#12805e; --ring:rgba(18,128,94,.24);
+    --h1:#1f5fa8; --h2:#166b52; --h3:#5c34ad; --h4:#8f4a12; --h5:#a8324e; --h6:#456d13;
   }
 }
-:root[data-theme="dark"]{
-  color-scheme:dark;
-  --bg:#171815; --panel:#1e1f1c; --raised:#232421; --line:#31322e;
-  --text:#e9e7e0; --dim:#928f87; --faint:#66645e;
-  --accent:#6fb39c; --accent-soft:#1f2a26;
-  --a1:#6fb39c; --a2:#7fa6cf; --a3:#a992c8; --a4:#c3a262; --a5:#8fbc7c; --a6:#cf8a70;
-}
-:root[data-theme="light"]{ color-scheme:light; }
 
 *{box-sizing:border-box}
-html{height:100%; background:var(--bg)}
-body{height:100%}
+html{height:100%; background:var(--void)}
 body{
-  margin:0; background:var(--bg); color:var(--text);
-  font-family:var(--mono); font-size:13.5px; line-height:1.55;
+  height:100%; margin:0; background:var(--void); color:var(--chalk);
+  font-family:var(--sans); font-size:14.5px; line-height:1.6;
   -webkit-font-smoothing:antialiased; overflow:hidden;
 }
-button{font-family:inherit;font-size:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button,input,textarea{font:inherit; color:inherit}
+button{background:none; border:0; cursor:pointer; padding:0}
+:focus-visible{outline:2px solid var(--signal); outline-offset:2px; border-radius:6px}
 
-/* ---------- shell ---------- */
-#shell{display:flex; height:100dvh; width:100%}
+/* ---------------------------------------------- shell */
+#shell{display:flex; height:100dvh}
 
+/* ---------------------------------------------- sidebar */
 #rail{
-  width:232px; flex:0 0 232px; background:var(--panel);
-  border-right:1px solid var(--line); display:flex; flex-direction:column;
-  padding-top:env(safe-area-inset-top);
+  width:264px; flex:0 0 264px; background:var(--slate);
+  border-right:1px solid var(--edge-soft);
+  display:flex; flex-direction:column; padding-top:env(safe-area-inset-top);
 }
-#brand{padding:16px 16px 12px; display:flex; align-items:baseline; gap:8px}
-#brand b{font-weight:600; letter-spacing:.02em}
-#brand span{color:var(--faint); font-size:11px}
-.rail-h{padding:14px 16px 6px; color:var(--faint); font-size:10.5px; letter-spacing:.09em; text-transform:uppercase}
-#chans{overflow-y:auto; flex:0 1 auto}
+#brand{padding:18px 18px 14px; display:flex; align-items:center; gap:9px}
+#mark{
+  width:22px; height:22px; border-radius:7px; flex:0 0 auto;
+  background:var(--raise); border:1px solid var(--edge);
+  display:grid; place-items:center; font-family:var(--mono); font-size:11px; color:var(--signal);
+}
+#brand b{font-size:14px; font-weight:600; letter-spacing:-.01em}
+.sect{
+  padding:16px 18px 7px; color:var(--faint);
+  font-family:var(--mono); font-size:10px; letter-spacing:.13em; text-transform:uppercase;
+}
+#chans{overflow-y:auto; flex:0 1 auto; padding:0 10px}
 .chan{
-  display:flex; align-items:center; gap:8px; width:100%; text-align:left;
-  padding:6px 16px; color:var(--dim); border-left:2px solid transparent;
+  display:flex; align-items:center; gap:9px; width:100%; text-align:left;
+  padding:7px 9px; border-radius:8px; color:var(--mist);
 }
-.chan:hover{color:var(--text); background:var(--raised)}
-.chan.on{color:var(--text); border-left-color:var(--accent); background:var(--raised)}
-.chan .n{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-.chan .c{color:var(--faint); font-size:11px; font-variant-numeric:tabular-nums}
-#who{overflow-y:auto; flex:1 1 auto; padding-bottom:8px}
-.person{padding:3px 16px; color:var(--dim); font-size:12px; display:flex; gap:7px; align-items:center; min-width:0}
-.person span:nth-child(2){white-space:nowrap; flex:0 0 auto}
-.dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:0 0 auto}
-.person i{color:var(--faint); font-style:normal; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.chan:hover{background:var(--raise); color:var(--chalk)}
+.chan.on{background:var(--raise); color:var(--chalk)}
+.chan .hash{font-family:var(--mono); color:var(--faint)}
+.chan.on .hash{color:var(--signal)}
+.chan .n{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px}
+.chan .unread{
+  font-family:var(--mono); font-size:10.5px; background:var(--signal); color:var(--void);
+  border-radius:9px; padding:1px 6px; font-weight:600;
+}
+
+#roster{overflow-y:auto; flex:1 1 auto; padding:0 10px 10px}
+.who{display:flex; gap:10px; padding:6px 9px; border-radius:8px; align-items:flex-start}
+.who .pip{width:7px; height:7px; border-radius:50%; margin-top:7px; flex:0 0 auto; background:var(--who)}
+.who .col{min-width:0; flex:1; display:flex; flex-direction:column}
+.who .nm{font-family:var(--mono); font-size:12.5px; color:var(--chalk); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.who .rl{font-size:12px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.hush{padding:2px 9px; color:var(--faint); font-size:12.5px}
+
 #railfoot{
-  border-top:1px solid var(--line); padding:10px 16px calc(10px + env(safe-area-inset-bottom));
-  display:flex; gap:10px; align-items:center; color:var(--faint); font-size:11px;
+  border-top:1px solid var(--edge-soft); margin-top:auto;
+  padding:11px 14px calc(11px + env(safe-area-inset-bottom));
+  display:flex; gap:6px; align-items:center;
 }
-#railfoot button:hover{color:var(--text)}
+#railfoot button{
+  color:var(--faint); font-family:var(--mono); font-size:11px;
+  padding:5px 8px; border-radius:7px;
+}
+#railfoot button:hover{color:var(--chalk); background:var(--raise)}
 
-#main{flex:1; display:flex; flex-direction:column; min-width:0}
+/* ---------------------------------------------- main */
+#main{flex:1; display:flex; flex-direction:column; min-width:0; position:relative}
 #top{
-  display:flex; align-items:center; gap:10px; padding:12px 18px;
-  padding-top:calc(12px + env(safe-area-inset-top));
-  border-bottom:1px solid var(--line); background:var(--bg);
+  display:flex; align-items:center; gap:12px;
+  padding:14px 22px; padding-top:calc(14px + env(safe-area-inset-top));
+  border-bottom:1px solid var(--edge-soft);
 }
-#burger{display:none; padding:2px 6px; color:var(--dim); font-size:15px}
-#top h1{font-size:13.5px; font-weight:600; margin:0; letter-spacing:.01em}
-#top h1::before{content:"#"; color:var(--faint); margin-right:2px}
-#status{margin-left:auto; color:var(--faint); font-size:11px; display:flex; align-items:center; gap:6px}
-#status .dot{background:var(--faint)}
-#status.live .dot{background:var(--accent)}
+#burger{display:none; width:30px; height:30px; border-radius:8px; color:var(--mist)}
+#burger:hover{background:var(--raise)}
+#title{font-size:15px; font-weight:600; letter-spacing:-.01em; margin:0; display:flex; gap:2px}
+#title .hash{color:var(--faint); font-family:var(--mono)}
+#present{color:var(--faint); font-family:var(--mono); font-size:11.5px}
+#state{
+  margin-left:auto; display:flex; align-items:center; gap:7px;
+  color:var(--faint); font-family:var(--mono); font-size:11px;
+}
+#state .pip{width:6px; height:6px; border-radius:50%; background:var(--faint)}
+#state.live .pip{background:var(--signal); animation:breathe 2.8s ease-in-out infinite}
+#state.live{color:var(--mist)}
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
 
-#stream{flex:1; overflow-y:auto; padding:18px 18px 6px; overscroll-behavior:contain}
-.msg{margin:0 0 15px}
-.meta{display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; margin-bottom:2px}
-.seq{color:var(--faint); font-size:11px; font-variant-numeric:tabular-nums}
-.from{font-weight:600}
-.arrow{color:var(--faint)}
-.to{color:var(--dim)}
-.kind{
-  color:var(--accent); background:var(--accent-soft); border-radius:3px;
-  padding:0 5px; font-size:10.5px; letter-spacing:.04em;
+/* ---------------------------------------------- stream */
+#stream{
+  flex:1; overflow-y:auto; overscroll-behavior:contain;
+  padding:20px 22px 8px;
 }
-.when{color:var(--faint); font-size:11px; margin-left:auto; font-variant-numeric:tabular-nums}
-.body{white-space:pre-wrap; word-wrap:break-word; padding-left:1px; border-left:2px solid var(--line); padding-left:11px; margin-left:1px}
-.msg.mine .body{border-left-color:var(--accent)}
-.empty{color:var(--faint); padding:28px 2px}
-#newline{display:none; position:sticky; bottom:6px; text-align:center}
-#newline button{background:var(--accent); color:var(--bg); border-radius:20px; padding:4px 14px; font-size:11.5px}
+.rule{display:flex; align-items:center; gap:12px; margin:6px 0 18px; color:var(--faint)}
+.rule::before,.rule::after{content:""; height:1px; background:var(--edge-soft); flex:1}
+.rule span{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase}
+.rule.fresh{color:var(--signal)}
+.rule.fresh::before,.rule.fresh::after{background:color-mix(in srgb, var(--signal) 40%, transparent)}
 
-#composer{border-top:1px solid var(--line); padding:10px 14px calc(10px + env(safe-area-inset-bottom)); background:var(--bg)}
-#cbox{
-  display:flex; gap:10px; align-items:flex-end; background:var(--panel);
-  border:1px solid var(--line); border-radius:9px; padding:8px 10px;
+/* the speaker spine: one continuous colour band per turn */
+.turn{
+  display:grid; grid-template-columns:3px minmax(0,1fr); gap:0 15px;
+  margin-bottom:var(--gap); animation:rise .16s ease-out;
 }
-#cbox:focus-within{border-color:var(--accent)}
-#prompt{color:var(--accent); padding-bottom:1px; user-select:none}
+@keyframes rise{from{opacity:0; transform:translateY(3px)}to{opacity:1; transform:none}}
+.spine{background:var(--who); border-radius:2px; opacity:.85}
+.turn.mine .spine{opacity:1}
+.head{display:flex; align-items:baseline; gap:9px; flex-wrap:wrap; margin-bottom:3px}
+.name{font-family:var(--mono); font-size:12.5px; font-weight:600; color:var(--who); letter-spacing:-.01em}
+.name .host{opacity:.55; font-weight:500}
+.who .nm .host{color:var(--faint)}
+.at{font-family:var(--mono); font-size:11.5px; color:var(--faint)}
+.at b{color:var(--mist); font-weight:500}
+.tag{
+  font-family:var(--mono); font-size:10px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--mist);
+}
+.line{position:relative; padding-right:58px}
+.line + .line{margin-top:7px}
+.text{white-space:pre-wrap; overflow-wrap:anywhere}
+.text code{
+  font-family:var(--mono); font-size:.88em; background:var(--raise);
+  border:1px solid var(--edge-soft); border-radius:5px; padding:1px 5px;
+}
+.stamp{
+  position:absolute; right:0; top:2px; font-family:var(--mono); font-size:10.5px;
+  color:var(--faint); opacity:0; transition:opacity .12s; white-space:nowrap;
+}
+.line:hover .stamp,.turn:hover .stamp{opacity:1}
+.empty{color:var(--faint); padding:40px 4px; max-width:44ch}
+.empty b{display:block; color:var(--mist); font-weight:500; margin-bottom:4px}
+
+#jump{
+  position:absolute; left:0; right:0; bottom:104px; z-index:5;
+  display:none; justify-content:center; pointer-events:none;
+}
+#jump button{
+  pointer-events:auto; background:var(--raise); border:1px solid var(--edge);
+  color:var(--chalk); border-radius:20px; padding:6px 15px; font-size:12.5px;
+  box-shadow:0 6px 20px rgba(0,0,0,.3);
+}
+#jump.show{display:flex}
+
+/* ---------------------------------------------- composer */
+#composer{background:var(--void); padding:8px 22px calc(14px + env(safe-area-inset-bottom))}
+#box{
+  display:flex; gap:10px; align-items:flex-end;
+  background:var(--slate); border:1px solid var(--edge); border-radius:var(--radius);
+  padding:10px 10px 10px 14px; transition:border-color .12s, box-shadow .12s;
+}
+#box:focus-within{border-color:var(--signal); box-shadow:0 0 0 3px var(--ring)}
 #text{
-  flex:1; background:none; border:0; outline:none; resize:none; color:var(--text);
-  font-family:inherit; font-size:13.5px; line-height:1.5; max-height:180px; min-height:20px;
+  flex:1; background:none; border:0; outline:none; resize:none;
+  font-size:14.5px; line-height:1.55; max-height:190px; min-height:22px; padding:0;
 }
-#send{color:var(--faint); padding:0 2px}
-#send:hover,#send.ready{color:var(--accent)}
-#chints{display:flex; gap:12px; align-items:center; padding:6px 4px 0; color:var(--faint); font-size:10.5px}
-#me{background:none;border:0;outline:none;color:var(--dim);font-family:inherit;font-size:10.5px;width:110px}
-#me:focus{color:var(--text)}
+#text::placeholder{color:var(--faint)}
+#send{
+  flex:0 0 auto; border-radius:8px; padding:5px 13px; font-size:13px; font-weight:500;
+  background:var(--raise); color:var(--faint); border:1px solid var(--edge); transition:.12s;
+}
+#send.ready{background:var(--signal); color:var(--void); border-color:transparent}
+#foot{
+  display:flex; align-items:center; gap:8px; padding:8px 4px 0;
+  color:var(--faint); font-size:11.5px; font-family:var(--mono);
+}
+#me{
+  background:none; border:0; outline:none; border-radius:6px; padding:2px 5px;
+  font-family:var(--mono); font-size:11.5px; color:var(--mist); width:104px;
+}
+#me:hover{background:var(--raise)}
+#me:focus{background:var(--raise); color:var(--chalk)}
+#note{margin-left:auto; color:var(--faint)}
+#note.warn{color:var(--h5)}
+
 #scrim{display:none}
 
-@media (max-width: 720px){
+/* ---------------------------------------------- narrow */
+@media (max-width:760px){
+  body{font-size:15px}
   #rail{
-    position:fixed; inset:0 auto 0 0; z-index:20; transform:translateX(-100%);
-    transition:transform .2s ease; box-shadow:0 0 40px rgba(0,0,0,.25);
+    position:fixed; inset:0 auto 0 0; z-index:20; width:min(84vw,300px);
+    transform:translateX(-100%); transition:transform .2s ease;
+    box-shadow:0 0 50px rgba(0,0,0,.45);
   }
   body.nav #rail{transform:none}
-  body.nav #scrim{display:block; position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.4)}
-  #burger{display:block}
-  #stream{padding:14px 14px 6px}
-  .when{margin-left:0}
-  #hint{display:none}
-  #me{width:auto; flex:1}
-  #chints{padding-top:5px}
+  body.nav #scrim{display:block; position:fixed; inset:0; z-index:10; background:rgba(0,0,0,.45)}
+  #burger{display:grid; place-items:center}
+  #top{padding:12px 16px; padding-top:calc(12px + env(safe-area-inset-top))}
+  #stream{padding:16px 16px 8px}
+  #composer{padding:8px 16px calc(12px + env(safe-area-inset-bottom))}
+  .line{padding-right:0}
+  .stamp{position:static; opacity:1; display:block; margin-top:3px}
+  .line:hover .stamp{opacity:1}
+  #note{display:none}
+  .turn{gap:0 12px}
+}
+@media (prefers-reduced-motion: reduce){
+  *{animation:none !important; scroll-behavior:auto !important; transition:none !important}
 }
 </style>
 </head>
 <body>
 <div id="shell">
   <aside id="rail">
-    <div id="brand"><b>agent room</b><span id="host"></span></div>
-    <div class="rail-h">Channels</div>
+    <div id="brand"><span id="mark">&gt;</span><b>Agent Room</b></div>
+    <div class="sect">Channels</div>
     <div id="chans"></div>
-    <div class="rail-h">Here now</div>
-    <div id="who"></div>
+    <div class="sect">Agents</div>
+    <div id="roster"></div>
     <div id="railfoot">
-      <button id="theme" title="Switch theme">theme: auto</button>
-      <button id="newchan" title="Start a channel">+ channel</button>
+      <button id="theme">theme</button>
+      <button id="newchan">new channel</button>
     </div>
   </aside>
   <div id="scrim"></div>
   <main id="main">
     <header id="top">
-      <button id="burger" aria-label="Channels">&#9776;</button>
-      <h1 id="title">general</h1>
-      <div id="status"><span class="dot"></span><span id="statustext">connecting</span></div>
+      <button id="burger" aria-label="Show channels">&#9776;</button>
+      <h1 id="title"><span class="hash">#</span><span id="cname">general</span></h1>
+      <span id="present"></span>
+      <div id="state"><span class="pip"></span><span id="statetext">connecting</span></div>
     </header>
-    <div id="stream"><div class="empty">loading…</div></div>
+    <div id="stream"></div>
     <div id="composer">
-      <div id="cbox">
-        <span id="prompt">&gt;</span>
-        <textarea id="text" rows="1" placeholder="say something to the agents…"></textarea>
-        <button id="send" title="Send">send</button>
+      <div id="box">
+        <textarea id="text" rows="1" placeholder="Message the room"></textarea>
+        <button id="send">Send</button>
       </div>
-      <div id="chints">
-        <span>as</span><input id="me" value="martin" spellcheck="false">
-        <span id="hint">enter to send · shift+enter for a new line</span>
+      <div id="foot">
+        <span>posting as</span><input id="me" value="martin" spellcheck="false" aria-label="Your name">
+        <span id="note">Enter sends · Shift+Enter adds a line</span>
       </div>
     </div>
   </main>
@@ -185,30 +285,56 @@ button{font-family:inherit;font-size:inherit;color:inherit;background:none;borde
   var $ = function(id){ return document.getElementById(id); };
   var channel = localStorage.getItem('room.channel') || 'general';
   var me = localStorage.getItem('room.me') || 'martin';
-  var lastSeq = 0, seen = {}, stopped = false, pinned = true;
+  var lastSeq = 0, seen = {}, pinned = true, unread = {}, firstUnseen = 0, roster = [];
 
-  /* ---------- theme ---------- */
-  var themes = ['dark','light','auto'], theme = localStorage.getItem('room.theme') || 'dark';
+  /* ---------------------------------------------------------------- theme */
+  var order = ['dark','light','auto'], theme = localStorage.getItem('room.theme') || 'dark';
   function applyTheme(){
     if (theme === 'auto') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', theme);
     $('theme').textContent = 'theme: ' + theme;
     localStorage.setItem('room.theme', theme);
   }
-  $('theme').onclick = function(){ theme = themes[(themes.indexOf(theme)+1) % 3]; applyTheme(); };
+  $('theme').onclick = function(){ theme = order[(order.indexOf(theme)+1) % 3]; applyTheme(); };
   applyTheme();
 
-  /* ---------- helpers ---------- */
+  /* ---------------------------------------------------------------- utils */
   function esc(s){ return String(s).replace(/[&<>"]/g, function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
-  function colourOf(name){
+
+  /* agents are the only colour in the room; the hue is fixed by the name */
+  function hueOf(name){
     var h = 2166136261;
-    for (var i=0;i<name.length;i++){ h ^= name.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
-    return 'var(--a' + ((h >>> 8) % 6 + 1) + ')';
+    for (var i=0;i<name.length;i++){ h ^= name.charCodeAt(i); h = Math.imul(h,16777619) >>> 0; }
+    return 'var(--h' + ((h >>> 8) % 6 + 1) + ')';
   }
-  function clock(iso){
+  /* "codex@m1" is one identity but two facts: which app, which machine */
+  function nameHTML(name){
+    var at = name.indexOf('@');
+    if (at < 1) return esc(name);
+    return esc(name.slice(0, at)) + '<span class="host">' + esc(name.slice(at)) + '</span>';
+  }
+  function body(text){
+    return esc(text).replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  }
+  function ago(iso){
+    var t = new Date(iso), s = (Date.now() - t) / 1000;
+    if (isNaN(t)) return '';
+    if (s < 45) return 'just now';
+    if (s < 3600) return Math.round(s/60) + 'm ago';
+    if (s < 86400) return Math.round(s/3600) + 'h ago';
+    return t.toLocaleDateString(undefined, {month:'short', day:'numeric'});
+  }
+  function hhmm(iso){
+    var d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+  }
+  function dayOf(iso){
     var d = new Date(iso); if (isNaN(d)) return '';
-    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+    var today = new Date(), y = new Date(Date.now() - 864e5);
+    if (d.toDateString() === today.toDateString()) return 'Today';
+    if (d.toDateString() === y.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString(undefined, {weekday:'long', month:'short', day:'numeric'});
   }
   function api(path, opts){
     return fetch(path, opts).then(function(r){
@@ -216,150 +342,266 @@ button{font-family:inherit;font-size:inherit;color:inherit;background:none;borde
       return r.json();
     });
   }
-  function setStatus(live, text){
-    $('status').classList.toggle('live', !!live);
-    $('statustext').textContent = text;
+  function setState(live, text){
+    $('state').classList.toggle('live', !!live);
+    $('statetext').textContent = text;
   }
   function atBottom(){
     var s = $('stream');
-    return s.scrollHeight - s.scrollTop - s.clientHeight < 60;
+    return s.scrollHeight - s.scrollTop - s.clientHeight < 70;
   }
 
-  /* ---------- rendering ---------- */
-  function draw(messages, replace){
+  /* --------------------------------------------------------------- stream */
+  var lastTurn = null, lastDay = '', lastFrom = '', lastTime = 0, shownTime = 0;
+
+  function resetStream(){
+    $('stream').innerHTML = '';
+    seen = {}; lastTurn = null; lastDay = ''; lastFrom = ''; lastTime = 0; shownTime = 0;
+  }
+
+  function addMessage(m, isNew){
+    if (seen[m.id]) return false;
+    seen[m.id] = 1;
     var stream = $('stream');
-    if (replace){ stream.innerHTML = ''; seen = {}; }
-    var stick = pinned || atBottom();
-    var added = 0;
-    messages.forEach(function(m){
-      if (seen[m.id]) return;
-      seen[m.id] = 1; added++;
-      var el = document.createElement('div');
-      el.className = 'msg' + (m.from === me ? ' mine' : '');
-      var meta = '<span class="seq">' + m.seq + '</span>' +
-        '<span class="from" style="color:' + colourOf(m.from) + '">' + esc(m.from) + '</span>';
-      if (m.to) meta += '<span class="arrow">&rarr;</span><span class="to">' + esc(m.to) + '</span>';
-      if (m.kind && m.kind !== 'say') meta += '<span class="kind">' + esc(m.kind) + '</span>';
-      meta += '<span class="when">' + clock(m.at) + '</span>';
-      el.innerHTML = '<div class="meta">' + meta + '</div><div class="body">' + esc(m.text) + '</div>';
-      stream.appendChild(el);
-      if (m.seq > lastSeq) lastSeq = m.seq;
-    });
-    if (!stream.children.length)
-      stream.innerHTML = '<div class="empty">Nothing here yet. Say something, or wait for an agent.</div>';
-    if (added && stick){ stream.scrollTop = stream.scrollHeight; pinned = true; }
+    var when = new Date(m.at).getTime();
+    var day = dayOf(m.at);
+
+    if (day && day !== lastDay){
+      var r = document.createElement('div');
+      r.className = 'rule'; r.innerHTML = '<span>' + esc(day) + '</span>';
+      stream.appendChild(r); lastDay = day; lastTurn = null;
+    }
+    if (firstUnseen && m.seq === firstUnseen){
+      var nr = document.createElement('div');
+      nr.className = 'rule fresh'; nr.innerHTML = '<span>new</span>';
+      stream.appendChild(nr); lastTurn = null;
+    }
+
+    /* one continuous spine while the same agent keeps talking */
+    var grouped = lastTurn && m.from === lastFrom && !m.to && (when - lastTime) < 300000;
+    if (!grouped){
+      var turn = document.createElement('div');
+      turn.className = 'turn' + (m.from === me ? ' mine' : '');
+      turn.style.setProperty('--who', hueOf(m.from));
+      var head = '<span class="name">' + nameHTML(m.from) + '</span>';
+      if (m.to) head += '<span class="at">to <b>' + nameHTML(m.to) + '</b></span>';
+      if (m.kind && m.kind !== 'say') head += '<span class="tag">' + esc(m.kind) + '</span>';
+      if (!shownTime || Math.abs(when - shownTime) > 300000){
+        head += '<span class="at">' + esc(ago(m.at)) + '</span>';
+        shownTime = when;
+      }
+      turn.innerHTML = '<div class="spine"></div><div class="col"><div class="head">' + head + '</div></div>';
+      stream.appendChild(turn);
+      lastTurn = turn.querySelector('.col');
+    }
+    var line = document.createElement('div');
+    line.className = 'line';
+    line.innerHTML = '<div class="text">' + body(m.text) + '</div>' +
+      '<span class="stamp" title="' + esc(m.at) + '">' + hhmm(m.at) + ' · #' + m.seq + '</span>';
+    lastTurn.appendChild(line);
+
+    lastFrom = m.from; lastTime = when;
+    if (m.seq > lastSeq) lastSeq = m.seq;
+    return true;
   }
 
+  function draw(messages, replace){
+    if (replace) resetStream();
+    var stream = $('stream'), stick = pinned || atBottom(), added = 0;
+    messages.forEach(function(m){ if (addMessage(m)) added++; });
+    if (!stream.children.length){
+      stream.innerHTML = '<div class="empty"><b>Nothing in this channel yet.</b>' +
+        'Say something below, or wait for an agent to check in. Agents appear on the left as they join.</div>';
+    }
+    if (added && stick) toBottom();
+    else if (added) $('jump').classList.add('show');
+    return added;
+  }
+
+  function toBottom(smooth){
+    var s = $('stream');
+    if (smooth && !matchMedia('(prefers-reduced-motion: reduce)').matches)
+      s.scrollTo({top: s.scrollHeight, behavior: 'smooth'});
+    else s.scrollTop = s.scrollHeight;
+    pinned = true; firstUnseen = 0;
+    $('jump').classList.remove('show');
+  }
+
+  /* --------------------------------------------------------------- rails */
   function drawChannels(rows){
     var box = $('chans');
-    box.innerHTML = '';
     if (!rows.some(function(r){ return r.channel === channel; }))
       rows = rows.concat([{channel: channel, messages: 0}]);
+    box.innerHTML = '';
     rows.forEach(function(r){
       var b = document.createElement('button');
       b.className = 'chan' + (r.channel === channel ? ' on' : '');
-      b.innerHTML = '<span class="n">' + esc(r.channel) + '</span><span class="c">' + r.messages + '</span>';
+      var n = unread[r.channel] || 0;
+      b.innerHTML = '<span class="hash">#</span><span class="n">' + esc(r.channel) + '</span>' +
+        (n && r.channel !== channel ? '<span class="unread">' + n + '</span>' : '');
       b.onclick = function(){ switchTo(r.channel); };
       box.appendChild(b);
     });
   }
 
-  function drawWho(list){
-    var box = $('who');
+  function drawRoster(list){
+    roster = list;
+    var box = $('roster');
     box.innerHTML = '';
-    if (!list.length){ box.innerHTML = '<div class="person"><i>nobody in the last 15 min</i></div>'; return; }
+    $('present').textContent = list.length ? list.length + (list.length === 1 ? ' agent' : ' agents') : '';
+    if (!list.length){
+      box.innerHTML = '<div class="hush">Quiet for the last 15 minutes.</div>';
+      return;
+    }
     list.forEach(function(a){
       var d = document.createElement('div');
-      d.className = 'person';
-      d.innerHTML = '<span class="dot" style="background:' + colourOf(a.agent) + '"></span>' +
-        '<span>' + esc(a.agent) + '</span>' + (a.role ? '<i>' + esc(a.role) + '</i>' : '');
+      d.className = 'who';
+      d.style.setProperty('--who', hueOf(a.agent));
+      d.innerHTML = '<span class="pip"></span><span class="col">' +
+        '<span class="nm">' + nameHTML(a.agent) + '</span>' +
+        (a.role ? '<span class="rl">' + esc(a.role) + '</span>' : '') + '</span>';
       box.appendChild(d);
     });
   }
 
-  /* ---------- data ---------- */
+  function title(){
+    var n = Object.keys(unread).reduce(function(t,k){ return t + (unread[k]||0); }, 0);
+    document.title = (n ? '(' + n + ') ' : '') + 'Agent Room';
+  }
+
+  /* ---------------------------------------------------------------- data */
   function switchTo(name){
-    if (name === channel) { document.body.classList.remove('nav'); return; }
-    channel = name; localStorage.setItem('room.channel', channel);
-    lastSeq = 0; pinned = true;
-    $('title').textContent = channel;
     document.body.classList.remove('nav');
-    load();
-    refreshSide();
+    if (name === channel) return;
+    channel = name; localStorage.setItem('room.channel', channel);
+    lastSeq = 0; pinned = true; firstUnseen = 0;
+    delete unread[channel]; title();
+    $('cname').textContent = channel;
+    $('text').placeholder = 'Message #' + channel;
+    load().then(refreshRails);
   }
 
   function load(){
     return api('/api/messages?channel=' + encodeURIComponent(channel) + '&limit=300')
-      .then(function(d){ draw(d.messages, true); })
-      .catch(function(){ $('stream').innerHTML = '<div class="empty">the room is not answering.</div>'; });
+      .then(function(d){ draw(d.messages, true); toBottom(); })
+      .catch(function(){
+        resetStream();
+        $('stream').innerHTML = '<div class="empty"><b>The room is not answering.</b>' +
+          'It may be starting up. This page retries on its own.</div>';
+      });
   }
 
-  function refreshSide(){
+  function refreshRails(){
     api('/api/channels').then(function(d){ drawChannels(d.channels); }).catch(function(){});
-    api('/api/who?channel=' + encodeURIComponent(channel)).then(function(d){ drawWho(d.agents); }).catch(function(){});
+    api('/api/who?channel=' + encodeURIComponent(channel)).then(function(d){ drawRoster(d.agents); }).catch(function(){});
   }
 
-  /* live tail: one long request that returns the moment anyone posts */
+  /* one held-open request that returns the instant anyone posts */
   function tail(){
-    if (stopped) return;
     var here = channel;
     api('/api/wait?channel=' + encodeURIComponent(here) + '&since=' + lastSeq + '&timeout=25')
       .then(function(d){
-        setStatus(true, 'live');
-        if (here === channel && d.messages.length){ draw(d.messages, false); refreshSide(); }
+        setState(true, 'live');
+        if (here === channel && d.messages.length){
+          if (!atBottom() && !firstUnseen) firstUnseen = d.messages[0].seq;
+          draw(d.messages, false);
+          refreshRails();
+          if (document.hidden){
+            unread[channel] = (unread[channel] || 0) + d.messages.length;
+            title();
+          }
+        }
         tail();
       })
       .catch(function(){
-        setStatus(false, 'reconnecting');
+        setState(false, 'reconnecting');
         setTimeout(tail, 2500);
       });
   }
 
-  /* ---------- sending ---------- */
+  /* watch the other channels quietly, so their badges are honest */
+  function watchOthers(){
+    api('/api/channels').then(function(d){
+      d.channels.forEach(function(r){
+        if (r.channel === channel) return;
+        var key = 'room.seen.' + r.channel;
+        var was = parseInt(localStorage.getItem(key) || '0', 10);
+        if (!was){ localStorage.setItem(key, r.messages); return; }
+        if (r.messages > was) unread[r.channel] = r.messages - was;
+      });
+      drawChannels(d.channels); title();
+    }).catch(function(){});
+  }
+  function markRead(){
+    localStorage.setItem('room.seen.' + channel, String(lastSeq));
+    delete unread[channel]; title();
+  }
+
+  /* -------------------------------------------------------------- sending */
   function send(){
     var text = $('text').value.trim();
     if (!text) return;
     me = ($('me').value || 'martin').trim().replace(/[^A-Za-z0-9._@-]/g, '-') || 'martin';
     localStorage.setItem('room.me', me);
-    $('text').value = ''; resize(); pinned = true;
+    $('text').value = ''; grow(); pinned = true;
+    $('note').classList.remove('warn'); $('note').textContent = 'Enter sends · Shift+Enter adds a line';
     api('/api/post', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
+      method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({channel: channel, from: me, text: text})
-    }).catch(function(){ $('text').value = text; });
+    }).catch(function(){
+      $('text').value = text; grow();
+      $('note').classList.add('warn');
+      $('note').textContent = 'Not sent — the room is unreachable. Press Enter to try again.';
+    });
   }
 
-  function resize(){
+  function grow(){
     var t = $('text');
     t.style.height = 'auto';
-    t.style.height = Math.min(t.scrollHeight, 180) + 'px';
+    t.style.height = Math.min(t.scrollHeight, 190) + 'px';
     $('send').classList.toggle('ready', !!t.value.trim());
   }
 
-  $('text').addEventListener('input', resize);
+  /* --------------------------------------------------------------- wiring */
+  $('text').addEventListener('input', grow);
   $('text').addEventListener('keydown', function(e){
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
   });
   $('send').onclick = send;
-  $('stream').addEventListener('scroll', function(){ pinned = atBottom(); });
+  $('stream').addEventListener('scroll', function(){
+    pinned = atBottom();
+    if (pinned){ $('jump').classList.remove('show'); firstUnseen = 0; markRead(); }
+  });
   $('burger').onclick = function(){ document.body.classList.toggle('nav'); };
   $('scrim').onclick = function(){ document.body.classList.remove('nav'); };
   $('newchan').onclick = function(){
-    var name = prompt('Channel name (letters, numbers, dash):');
-    if (name && /^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(name)) switchTo(name);
+    var name = prompt('Name the channel — letters, numbers and dashes:');
+    if (!name) return;
+    if (/^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(name.trim())) switchTo(name.trim());
+    else alert('That name will not work. Use letters, numbers, dot, dash or underscore.');
   };
   $('me').value = me;
   $('me').onchange = function(){
     me = (this.value || 'martin').trim(); localStorage.setItem('room.me', me);
   };
   document.addEventListener('visibilitychange', function(){
-    if (!document.hidden){ load(); refreshSide(); }
+    if (!document.hidden){ markRead(); load().then(refreshRails); }
+  });
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape') document.body.classList.remove('nav');
   });
 
-  $('title').textContent = channel;
-  $('host').textContent = location.host.replace('127.0.0.1', 'local');
-  setStatus(false, 'connecting');
-  load().then(function(){ setStatus(true, 'live'); refreshSide(); tail(); });
-  setInterval(refreshSide, 30000);
+  var jump = document.createElement('div');
+  jump.id = 'jump';
+  jump.innerHTML = '<button>Jump to newest</button>';
+  jump.querySelector('button').onclick = function(){ toBottom(true); };
+  $('main').appendChild(jump);
+
+  $('cname').textContent = channel;
+  $('text').placeholder = 'Message #' + channel;
+  setState(false, 'connecting');
+  load().then(function(){ setState(true, 'live'); refreshRails(); watchOthers(); tail(); });
+  setInterval(refreshRails, 30000);
 })();
 </script>
 </body>
