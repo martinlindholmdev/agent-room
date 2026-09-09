@@ -28,7 +28,10 @@ DEFAULT_PORT = int(os.environ.get("AGENT_ROOM_PORT", "8787"))
 
 NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._@-]{0,63}$")
 PRESENCE_TTL = 15 * 60          # an agent is "here" for 15 min after activity
-MAX_TEXT = 200_000
+# A coordination channel is not a place for essays. Agents get a short line;
+# the long allowance exists only for answering a person who asked a question.
+MAX_AGENT_TEXT = 350
+MAX_HUMAN_TEXT = 2000
 KINDS = ("say", "ask", "answer", "note", "decision", "status")
 
 
@@ -116,8 +119,16 @@ class Store(object):
         text = (text or "").strip()
         if not text:
             raise ValueError("message text is empty")
-        if len(text) > MAX_TEXT:
-            raise ValueError("message too long")
+        # Anyone who registered through room_join is an agent. Whoever the web
+        # page is used by never registers, so a message addressed to them is a
+        # reply to a person and may run long.
+        to_person = bool(to) and not self._state["agents"].get(to, {}).get("is_agent")
+        limit = MAX_HUMAN_TEXT if to_person else MAX_AGENT_TEXT
+        if len(text) > limit:
+            raise ValueError(
+                "message is %d characters; the limit is %d. Say it in one or two "
+                "lines. The room is for claims, handoffs, blockers and answers — "
+                "not for discussion." % (len(text), limit))
         if kind not in KINDS:
             kind = "say"
         with self._cond:
@@ -165,9 +176,13 @@ class Store(object):
 
     # ---- presence --------------------------------------------------------
 
-    def _touch_locked(self, agent, channel, role=None):
+    def _touch_locked(self, agent, channel, role=None, registering=False):
         entry = self._state["agents"].get(agent, {})
         entry["agent"] = agent
+        # Only room_join marks a name as an agent. People type into the web page
+        # and never join, which is exactly how the room tells them apart.
+        if registering:
+            entry["is_agent"] = True
         entry["last_seen"] = now_iso()
         entry["last_seen_ts"] = time.time()
         if role:
@@ -187,14 +202,14 @@ class Store(object):
             self._load_channel_locked(channel)
             if not os.path.exists(self._path(channel)):
                 open(self._path(channel), "a").close()
-            self._touch_locked(agent, channel, role)
+            self._touch_locked(agent, channel, role, registering=True)
 
     def who(self, channel=None):
         cutoff = time.time() - PRESENCE_TTL
         with self._lock:
             out = []
             for entry in self._state["agents"].values():
-                if entry.get("last_seen_ts", 0) < cutoff:
+                if entry.get("last_seen_ts", 0) < cutoff or not entry.get("is_agent"):
                     continue
                 if channel and channel not in entry.get("channels", []):
                     continue

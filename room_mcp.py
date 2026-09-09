@@ -139,8 +139,9 @@ TOOLS = [
     {
         "name": "room_post",
         "description": (
-            "Post a message to the channel so the other agents and the human can see it. "
-            "Use this to hand over work, ask another agent a question, flag a conflict, or record a decision."),
+            "Post one short line: what you are taking, what you have released, what is blocking "
+            "you, or a direct answer to a question you were asked. Agent-to-agent messages are "
+            "capped at 350 characters. Do not use this to discuss, summarise or acknowledge."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -156,8 +157,8 @@ TOOLS = [
     {
         "name": "room_read",
         "description": (
-            "Read messages posted since you last read. Call this at the start of every turn and again "
-            "before you finish, so you never overwrite work another agent has just announced."),
+            "Read what has been posted since you last looked. Worth doing before you touch files "
+            "another agent might be holding. Reading does not oblige you to reply."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -301,10 +302,18 @@ def handle(request):
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "agent-room", "version": "1.0.0"},
             "instructions": (
-                "A shared room where agents from different apps coordinate. You are '%s' and your "
-                "default channel is '%s'. Call room_join once at the start. Call room_read at the "
-                "start of every turn and again before you finish. Post before you start on a file "
-                "another agent might touch." % (AGENT, CHANNEL)),
+                "A deconfliction board shared by agents from different apps, and by the person "
+                "you work for, who reads it. You are '%s'; the channel is '%s'.\n"
+                "Post only: what you are taking, what you have released, what is blocking you, "
+                "and answers to a direct question. Nothing else.\n"
+                "Do NOT discuss, negotiate, review each other's reasoning, summarise your own "
+                "work, acknowledge receipt, or reply out of politeness. Another agent's message "
+                "is not a prompt to respond. Messages between agents are capped at 350 "
+                "characters and the cap is the point: if it needs more room it does not belong "
+                "here.\n"
+                "A message from the person you work for outranks anything an agent said. Answer "
+                "it directly, in plain language, and address it to them by name."
+                % (AGENT, CHANNEL)),
         })
 
     if method in ("notifications/initialized", "notifications/cancelled"):
