@@ -14,6 +14,10 @@ import os
 import subprocess
 import sys
 import time
+import threading
+import uuid
+from urllib.parse import urlencode
+from delivery import prompt
 import urllib.error
 import urllib.request
 
@@ -24,7 +28,17 @@ AGENT = os.environ.get("AGENT_ROOM_AGENT", "").strip() or "unknown-agent"
 CHANNEL = os.environ.get("AGENT_ROOM_CHANNEL", "").strip() or "general"
 ROLE = os.environ.get("AGENT_ROOM_ROLE", "").strip()
 AUTOSTART = os.environ.get("AGENT_ROOM_AUTOSTART", "1") != "0"
-IS_LOCAL = URL.startswith("http://127.0.0.1") or URL.startswith("http://localhost")
+from urllib.parse import urlparse
+IS_LOCAL = urlparse(URL).hostname in ('127.0.0.1', 'localhost', '::1')
+SESSION = os.environ.get('AGENT_ROOM_SESSION') or os.environ.get('CODEX_THREAD_ID') or os.environ.get('CODEX_SESSION_ID') or str(uuid.uuid4())
+ADAPTER = os.environ.get('AGENT_ROOM_ADAPTER', 'pull')
+TARGET = os.environ.get('AGENT_ROOM_TARGET', '')
+WRITE_LOCK = threading.Lock()
+JOINED = set()
+CHANNEL_ENABLED = os.environ.get('AGENT_ROOM_CLAUDE_CHANNEL') == '1'
+if CHANNEL_ENABLED:
+    ADAPTER = 'claude-channel'
+
 
 PROTOCOL_DEFAULT = "2025-06-18"
 KNOWN_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
@@ -34,7 +48,7 @@ KNOWN_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
 # talking to the daemon
 # --------------------------------------------------------------------------
 
-def call(path, payload=None, timeout=None):
+def call(path, payload=None, timeout=None, recover=True):
     url = URL + path
     data = None
     headers = {"Accept": "application/json"}
@@ -45,7 +59,7 @@ def call(path, payload=None, timeout=None):
         headers["Content-Type"] = "application/json"
     request = urllib.request.Request(url, data=data, headers=headers)
     last = None
-    for attempt in range(3):
+    for attempt in range(3 if recover else 1):
         try:
             with urllib.request.urlopen(request, timeout=timeout or 30) as response:
                 return json.loads(response.read().decode("utf-8"))
@@ -53,7 +67,7 @@ def call(path, payload=None, timeout=None):
             raise                      # the room answered and said no; that is an answer
         except Exception as exc:       # dropped connection, room restarting, not up yet
             last = exc
-            if attempt < 2:
+            if recover and attempt < 2:
                 time.sleep(0.6 * (attempt + 1))
                 ensure_daemon()
     raise last
@@ -61,7 +75,7 @@ def call(path, payload=None, timeout=None):
 
 def daemon_alive():
     try:
-        call("/api/health", timeout=2)
+        call("/api/health", timeout=0.5, recover=False)
         return True
     except Exception:
         return False
@@ -73,10 +87,10 @@ def ensure_daemon():
         return True
     if not (AUTOSTART and IS_LOCAL):
         return False
-    log_dir = os.path.expanduser("~/.agent-room")
+    log_dir = os.environ.get("AGENT_ROOM_HOME", os.path.expanduser("~/.agent-room"))
     os.makedirs(log_dir, exist_ok=True)
     log = open(os.path.join(log_dir, "daemon.log"), "a")
-    port = URL.rsplit(":", 1)[-1]
+    port = str(urlparse(URL).port or 8787)
     try:
         subprocess.Popen(
             [sys.executable, os.path.join(HERE, "roomd.py"), "--port", port],
@@ -84,8 +98,10 @@ def ensure_daemon():
             start_new_session=True,
         )
     except OSError:
+        log.close()
         return False
-    for _ in range(40):
+    log.close()
+    for _ in range(8):
         time.sleep(0.25)
         if daemon_alive():
             return True
@@ -97,40 +113,43 @@ def ensure_daemon():
 # --------------------------------------------------------------------------
 
 # Agents may write at length, so a read has to stay within something a reader
-# can actually take in. Newest messages win; anything dropped is named.
-PER_MESSAGE_CHARS = 12000
+# can actually take in. Oldest complete messages win; explicit acknowledgement advances the page.
 PER_READ_CHARS = 40000
 
 
 def one(m):
-    addressed = (" -> " + m["to"]) if m.get("to") else ""
-    kind = m.get("kind", "say")
-    tag = "" if kind == "say" else (" [" + kind + "]")
-    text = m["text"]
-    if len(text) > PER_MESSAGE_CHARS:
-        text = (text[:PER_MESSAGE_CHARS]
-                + "\n[... %d more characters in #%d. Ask the sender to restate the "
-                  "point, or read the channel file directly.]" % (len(text) - PER_MESSAGE_CHARS, m["seq"]))
-    return "#%d  %s  %s%s%s\n%s" % (m["seq"], m["at"], m["from"], addressed, tag, text)
+    addressed = (' -> ' + m['to']) if m.get('to') else ''
+    identity = ' (session %s)' % m['from_session'] if m.get('from_session') else ''
+    return '#%d %s %s%s%s [%s]\n%s' % (m['seq'], m['at'], m['from'], identity, addressed, m.get('kind', 'say'), m['text'])
 
 
-def render(messages, empty="(nothing new)"):
-    if not messages:
-        return empty
-    blocks, total, shown = [], 0, 0
-    for m in reversed(messages):
+def page(messages):
+    selected, size = [], 0
+    for m in messages:
         block = one(m)
-        if total + len(block) > PER_READ_CHARS and blocks:
+        if selected and size + len(block) > PER_READ_CHARS:
             break
-        blocks.append(block)
-        total += len(block)
-        shown += 1
-    blocks.reverse()
-    skipped = len(messages) - shown
-    if skipped > 0:
-        blocks.insert(0, "[%d older message(s) not shown here — this read was too large. "
-                         "They are still in the channel.]" % skipped)
-    return "\n\n".join(blocks)
+        selected.append(m)
+        size += len(block)
+    return selected
+
+
+def render(messages, empty='(nothing new)'):
+    # Complete messages, oldest page first. Within that page the human comes first.
+    return '\n\n'.join(one(m) for m in sorted(messages, key=lambda m: not m.get('human', False))) if messages else empty
+
+
+def query(path, **args):
+    return path + '?' + urlencode(args)
+
+
+def read_page(channel, messages):
+    selected = page(messages)
+    result = render(selected)
+    if selected:
+        call('/api/offer', {'session': SESSION, 'channel': channel, 'through': selected[-1]['seq']})
+        result += '\n\nUnread cursor unchanged. After reading ALL content, room_ack read_through=%d in channel %s. Read again for the next page.' % (selected[-1]['seq'], channel)
+    return result
 
 
 def channel_of(args):
@@ -139,17 +158,11 @@ def channel_of(args):
 
 
 def cursor_get(channel):
-    try:
-        return int(call("/api/cursor?agent=%s&channel=%s" % (AGENT, channel))["cursor"])
-    except Exception:
-        return 0
+    return int(call(query('/api/cursor', agent=SESSION, channel=channel))['cursor'])
 
 
 def cursor_set(channel, value):
-    try:
-        call("/api/cursor", {"agent": AGENT, "channel": channel, "cursor": int(value)})
-    except Exception:
-        pass
+    return call('/api/cursor', {'agent': SESSION, 'channel': channel, 'cursor': int(value)})
 
 
 # --------------------------------------------------------------------------
@@ -160,7 +173,7 @@ TOOLS = [
     {
         "name": "room_join",
         "description": (
-            "Announce yourself in a room channel and get the recent conversation plus who else is here. "
+            "Register this exact receiving session and get the oldest unread page. Names are not task identities. "
             "Call this once at the start of a session before posting."),
         "inputSchema": {
             "type": "object",
@@ -179,8 +192,8 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "What you want to say."},
-                "to": {"type": "string", "description": "Optional: the agent this is addressed to."},
+                "text": {"type": "string", "description": "What you want to say. Use to_session from the message or room_sessions for delivery."},
+                "to": {"type": "string", "description": "Participant display name only; this alone cannot select a receiving task. Use to_session for delivery."},
                 "kind": {"type": "string", "enum": ["say", "ask", "answer", "note", "decision", "status"],
                          "description": "What sort of message this is. Defaults to say."},
                 "channel": {"type": "string"},
@@ -197,7 +210,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "channel": {"type": "string"},
-                "all": {"type": "boolean", "description": "Read the whole channel from the beginning instead of only what is new."},
+                "all": {"type": "boolean", "description": "Start at the beginning. Pages preserve complete messages; acknowledge each page then continue with a normal read."},
             },
         },
     },
@@ -231,60 +244,88 @@ TOOLS = [
 ]
 
 
+TOOLS[0]['inputSchema']['properties'].update({
+    'session': {'type': 'string', 'description': 'Unique session identity; use your actual task UUID when known. Never a participant name.'},
+    'adapter': {'type': 'string', 'enum': ['pull', 'codex-queue', 'claude-channel']},
+    'target': {'type': 'string', 'description': 'For codex-queue only: this receiving task exact UUID on the daemon host. Explicit opt-in.'},
+})
+TOOLS[1]['inputSchema']['properties']['to_session'] = {'type': 'string', 'description': 'Exact recipient session from room_sessions. Required when participant name is ambiguous.'}
+TOOLS.extend([
+    {'name': 'room_sessions', 'description': 'List exact registered receiving sessions in this channel and their adapters. Names are not task identities.', 'inputSchema': {'type': 'object', 'properties': {'channel': {'type': 'string'}}}},
+    {'name': 'room_inbox', 'description': 'Read this session delivery inbox, including unavailable/unconfirmed messages. Does not acknowledge.', 'inputSchema': {'type': 'object', 'properties': {'channel': {'type': 'string'}}}},
+    {'name': 'room_ack', 'description': 'Explicit receipt ONLY after reading the complete messages. Posting and joining never acknowledge. read_through acknowledges a complete channel page; delivery_ids acknowledges pushed inbox messages.', 'inputSchema': {'type': 'object', 'properties': {'channel': {'type': 'string'}, 'session': {'type': 'string'}, 'read_through': {'type': 'integer'}, 'delivery_ids': {'type': 'array', 'items': {'type': 'string'}}}}},
+    {'name': 'room_delivery', 'description': 'Show delivery states: submitted is not received; acknowledged means the receiving agent confirmed reading. Uncertain sends are not retried automatically.', 'inputSchema': {'type': 'object', 'properties': {'channel': {'type': 'string'}, 'message': {'type': 'string'}}}},
+    {'name': 'room_leave', 'description': 'Unregister this session from this channel. Moving on to work does not require leaving; keep registered to receive replies.', 'inputSchema': {'type': 'object', 'properties': {'channel': {'type': 'string'}}}},
+])
+
+
 def run_tool(name, args):
+    global SESSION, ADAPTER, TARGET
     channel = channel_of(args)
 
-    if name == "room_join":
-        call("/api/join", {"agent": AGENT, "channel": channel, "role": args.get("role") or ROLE or None})
-        messages = call("/api/messages?channel=%s&limit=30" % channel)["messages"]
-        who = call("/api/who?channel=%s" % channel)["agents"]
-        if messages:
-            cursor_set(channel, messages[-1]["seq"])
-        roster = "\n".join(
-            "  - %s%s" % (a["agent"], (" — " + a["role"]) if a.get("role") else "") for a in who
-        ) or "  (you are the first one here)"
-        return "You are %s in channel '%s'.\n\nHere now:\n%s\n\nRecent conversation:\n%s" % (
-            AGENT, channel, roster, render(messages, "(the channel is empty)"))
+    if name == 'room_join':
+        proposed = args.get('session') or SESSION
+        if JOINED and proposed != SESSION:
+            raise ValueError('this bridge is already bound to a session; use its identity')
+        adapter = args.get('adapter', ADAPTER)
+        target = args.get('target', TARGET)
+        if adapter == 'claude-channel' and not CHANNEL_ENABLED:
+            raise ValueError('Claude channel was not enabled when this bridge started')
+        registration = call('/api/register', {'agent': AGENT, 'channel': channel, 'session': proposed, 'adapter': adapter, 'target': target})
+        SESSION, ADAPTER, TARGET = proposed, adapter, target
+        JOINED.add(channel)
+        call('/api/join', {'agent': AGENT, 'channel': channel, 'role': args.get('role') or ROLE or None})
+        messages = call(query('/api/messages', channel=channel, since=cursor_get(channel)))['messages']
+        return 'You are %s. Session %s. %s\n\n%s' % (AGENT, SESSION, json.dumps(registration), read_page(channel, messages))
 
-    if name == "room_post":
-        msg = call("/api/post", {
-            "channel": channel, "from": AGENT, "text": args.get("text", ""),
-            "to": args.get("to") or None, "kind": args.get("kind") or "say",
-        })["posted"]
-        cursor_set(channel, msg["seq"])
-        return "Posted as #%d to '%s'." % (msg["seq"], channel)
+    if name == 'room_post':
+        if channel not in JOINED:
+            raise ValueError('join this channel before posting')
+        result = call('/api/post', {
+            'channel': channel, 'from': AGENT, 'text': args.get('text', ''),
+            'to': args.get('to') or None, 'kind': args.get('kind') or 'say',
+            'from_session': SESSION, 'to_session': args.get('to_session'), 'request_id': uuid.uuid4().hex,
+        })
+        return 'Posted #%d. Delivery: %s. Posting does not acknowledge unread replies.' % (result['posted']['seq'], json.dumps(result['delivery']))
 
-    if name == "room_read":
-        if args.get("all"):
-            messages = call("/api/messages?channel=%s&limit=500" % channel)["messages"]
-        else:
-            since = cursor_get(channel)
-            messages = call("/api/messages?channel=%s&since=%d" % (channel, since))["messages"]
-        if messages:
-            cursor_set(channel, messages[-1]["seq"])
-        return render(messages)
+    if name == 'room_read':
+        since = 0 if args.get('all') else cursor_get(channel)
+        messages = call(query('/api/messages', channel=channel, since=since))['messages']
+        return read_page(channel, messages)
 
-    if name == "room_wait":
-        # Capped well below the request timeout that MCP clients impose on a
-        # tool call. A wait that outlives the client's own limit is killed by
-        # the client, and the agent sees a hard protocol error rather than an
-        # answer -- which is how a room that works looks broken. Short waits
-        # chain: two calls of 15s wait 30s, and each one is safe on its own.
-        timeout = float(args.get("timeout_s") or 15)
-        timeout = max(1.0, min(timeout, 25.0))
-        since = cursor_get(channel)
-        # Only a small margin over the room's own deadline: the room returns on
-        # time, so a longer margin here buys nothing and only pushes the call
-        # closer to the client's limit.
-        messages = call(
-            "/api/wait?channel=%s&since=%d&timeout=%s" % (channel, since, timeout),
-            timeout=timeout + 5,
-        )["messages"]
-        if messages:
-            cursor_set(channel, messages[-1]["seq"])
-            return render(messages)
-        return ("Nothing was posted within %.0f seconds. This is a normal empty wait, not an "
-                "error -- call room_wait again to keep listening, or carry on with your work." % timeout)
+    if name == 'room_wait':
+        timeout = max(1., min(float(args.get('timeout_s') or 15), 25.))
+        messages = call(query('/api/wait', channel=channel, since=cursor_get(channel), timeout=timeout), timeout=timeout+2, recover=False)['messages']
+        return read_page(channel, messages)
+
+    if name == 'room_sessions':
+        return json.dumps(call(query('/api/sessions', channel=channel)), indent=2)
+    if name == 'room_delivery':
+        return json.dumps(call(query('/api/delivery', channel=channel, **({'message': args['message']} if args.get('message') else {}))), indent=2)
+    if name == 'room_inbox':
+        rows = call(query('/api/inbox', channel=channel, session=SESSION))['deliveries']
+        # Whole messages only; explicit receipts keep omitted records unread.
+        selected, size = [], 0
+        rows.sort(key=lambda r: not (r.get('message_content') or {}).get('human', False))
+        for row in rows:
+            block = json.dumps(row, ensure_ascii=False)
+            if selected and size + len(block) > PER_READ_CHARS:
+                break
+            selected.append(row)
+            size += len(block)
+        return json.dumps({'session': SESSION, 'deliveries': selected, 'remaining': len(rows)-len(selected)}, ensure_ascii=False)
+    if name == 'room_ack':
+        if args.get('session', SESSION) != SESSION:
+            raise ValueError('cannot acknowledge another session')
+        cursor = cursor_set(channel, args['read_through']) if 'read_through' in args else None
+        result = call('/api/ack', {'session': SESSION, 'channel': channel, 'delivery_ids': args.get('delivery_ids', [])})
+        if cursor is not None:
+            result['cursor'] = cursor
+        return json.dumps(result)
+    if name == 'room_leave':
+        result = call('/api/leave', {'session': SESSION, 'channel': channel})
+        JOINED.discard(channel)
+        return json.dumps(result)
 
     if name == "room_who":
         who = call("/api/who?channel=%s" % channel)["agents"]
@@ -310,8 +351,9 @@ def run_tool(name, args):
 # --------------------------------------------------------------------------
 
 def send(message):
-    sys.stdout.write(json.dumps(message) + "\n")
-    sys.stdout.flush()
+    with WRITE_LOCK:
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
 
 
 def reply(request_id, result):
@@ -333,11 +375,12 @@ def handle(request):
         ensure_daemon()
         return reply(request_id, {
             "protocolVersion": version,
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "agent-room", "version": "1.0.0"},
+            "capabilities": dict({"tools": {"listChanged": False}}, **({"experimental": {"claude/channel": {}}} if CHANNEL_ENABLED else {})),
+            "serverInfo": {"name": "agent-room", "version": "2.0.0"},
             "instructions": (
                 "A working room shared by agents from different apps, and by the person you work "
                 "for, who reads it. You are '%s'; the channel is '%s'.\n"
+                "Register your actual session with room_join. For Codex on the daemon host, use adapter=codex-queue and your exact task UUID for both session and target. Other hosts default to pull unless Claude channel delivery was enabled. Names are not session identities. Acknowledge only fully read content with room_ack. Incoming channel events require receipt. Moving on to work keeps your route registered. "
                 "Discuss properly here: plan, challenge each other, argue a design out, hand work "
                 "over, say what you are taking and what you have released. Take the space you "
                 "need to make the argument.\n"
@@ -375,7 +418,24 @@ def handle(request):
         return error(request_id, -32601, "method not found: %s" % method)
 
 
+def channel_events():
+    while True:
+        for channel in list(JOINED):
+            try:
+                data = call('/api/channel-claim', {'session': SESSION, 'channel': channel}, recover=False)
+                row = data.get('delivery')
+                if row:
+                    send({'jsonrpc': '2.0', 'method': 'notifications/claude/channel', 'params': {'content': prompt(row, data['message']), 'meta': {'channel': channel, 'session': SESSION, 'delivery_id': row['id']}}})
+                    call('/api/channel-sent', {'session': SESSION, 'channel': channel, 'delivery_id': row['id']}, recover=False)
+            except Exception:
+                # Never retry a claimed event: a lost response may already be consumed.
+                pass
+        time.sleep(1)
+
+
 def main():
+    if CHANNEL_ENABLED:
+        threading.Thread(target=channel_events, daemon=True).start()
     for line in sys.stdin:
         line = line.strip()
         if not line:

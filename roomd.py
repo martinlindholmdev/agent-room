@@ -10,6 +10,7 @@ without this program.
 """
 
 import json
+import fcntl
 import os
 import re
 import sys
@@ -19,6 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+from delivery import Delivery, dispatch_one
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.environ.get("AGENT_ROOM_HOME", os.path.expanduser("~/.agent-room"))
@@ -54,6 +56,13 @@ class Store(object):
         self._cond = threading.Condition(self._lock)
         self._cache = {}        # channel -> list of messages
         self._state = self._load_state()
+        self.delivery = Delivery(ROOT)
+        # Recover only posts that carry a pinned route snapshot, never reroute old history.
+        with self._lock:
+            for filename in os.listdir(CHANNELS):
+                if filename.endswith('.jsonl') and valid_name(filename[:-6]):
+                    for msg in self._load_channel_locked(filename[:-6]):
+                        self.delivery.route(msg)
 
     # ---- state (agents, cursors) ----------------------------------------
 
@@ -109,11 +118,18 @@ class Store(object):
                 })
             return names
 
-    def post(self, channel, sender, text, to=None, kind="say"):
+    def post(self, channel, sender, text, to=None, kind="say", from_session=None, to_session=None, request_id=None):
         if not valid_name(channel):
             raise ValueError("channel name must be letters, numbers, dot, dash or underscore")
         if not valid_name(sender):
             raise ValueError("agent name must be letters, numbers, dot, dash or underscore")
+        if to and not valid_name(to):
+            raise ValueError('invalid recipient')
+        if request_id and (not isinstance(request_id, str) or len(request_id) > 128):
+            raise ValueError('invalid request id')
+        if from_session:
+            if not any(r['id'] == from_session and r['agent'] == sender for r in self.delivery.sessions(channel)):
+                raise ValueError('sender session must join this channel first')
         text = (text or "").strip()
         if not text:
             raise ValueError("message text is empty")
@@ -123,6 +139,10 @@ class Store(object):
             kind = "say"
         with self._cond:
             msgs = self._load_channel_locked(channel)
+            if request_id:
+                for old in msgs:
+                    if old.get('request_id') == request_id and old.get('from_session') == from_session and old['from'] == sender:
+                        return old
             msg = {
                 "seq": len(msgs) + 1,
                 "id": uuid.uuid4().hex[:12],
@@ -132,19 +152,27 @@ class Store(object):
                 "to": to if (to and valid_name(to)) else None,
                 "kind": kind,
                 "text": text,
+                "from_session": from_session,
+                "to_session": to_session,
+                "request_id": request_id,
+                "human": not from_session and not self._state['agents'].get(sender, {}).get('is_agent', False),
             }
+            msg["delivery_targets"] = self.delivery.targets(msg)
             with open(self._path(channel), "a") as fh:
                 fh.write(json.dumps(msg, ensure_ascii=False) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
             msgs.append(msg)
             self._touch_locked(sender, channel)
+            self.delivery.route(msg)
             self._cond.notify_all()
             return msg
 
-    def read(self, channel, since=0, limit=200):
+    def read(self, channel, since=0, limit=200, tail=False):
         with self._lock:
             msgs = self._load_channel_locked(channel)
             out = [m for m in msgs if m["seq"] > since]
-            return out[-limit:] if limit else out
+            return out[-limit:] if tail else out[:limit]
 
     def wait(self, channel, since=0, timeout=25.0):
         """Block until a message newer than `since` arrives, or time out.
@@ -158,7 +186,7 @@ class Store(object):
                 msgs = self._load_channel_locked(channel)
                 fresh = [m for m in msgs if m["seq"] > since]
                 if fresh:
-                    return fresh
+                    return fresh[:200]
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     return []
@@ -216,12 +244,31 @@ class Store(object):
         with self._lock:
             if value is None:
                 return int(self._state["cursors"].get(key, 0))
-            self._state["cursors"][key] = int(value)
+            if any(r['id'] == agent for r in self.delivery.sessions(channel)):
+                offered = self._state.get('offered', {}).get(key, 0)
+                if int(value) < 0 or int(value) > offered:
+                    raise ValueError('cursor exceeds the complete page offered to this session')
+            self._state["cursors"][key] = max(int(value), int(self._state["cursors"].get(key, 0)))
             self._save_state_locked()
-            return int(value)
+            return self._state["cursors"][key]
 
 
-STORE = Store()
+STORE = None
+
+
+def message_by_id(channel, message_id):
+    with STORE._lock:
+        return next((m for m in STORE._load_channel_locked(channel) if m['id'] == message_id), None)
+
+
+def deliver_forever():
+    while True:
+        try:
+            dispatch_one(STORE.delivery, message_by_id)
+        except Exception:
+            # Never log message text, credentials or host stderr.
+            sys.stderr.write('room delivery dispatcher error; inspect delivery status\n')
+        time.sleep(0.5)
 
 
 # --------------------------------------------------------------------------
@@ -233,7 +280,7 @@ BIND = os.environ.get("AGENT_ROOM_BIND", "127.0.0.1")
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AgentRoom/1.0"
+    server_version = "AgentRoom/2.0"
     protocol_version = "HTTP/1.1"
 
     # quieter logs: one line per request, no noise
@@ -279,7 +326,8 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > 2_000_000:
             return {}
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            return data if isinstance(data, dict) else {}
         except Exception:
             return {}
 
@@ -306,7 +354,7 @@ class Handler(BaseHTTPRequestHandler):
                 "icons": [{"src": "/icon.png", "sizes": "180x180", "type": "image/png"}],
             }, "application/manifest+json")
         if path == "/api/health":
-            return self._send(200, {"ok": True, "home": ROOT, "version": "1.0"})
+            return self._send(200, {"ok": True, "home": ROOT, "version": "2.0", "delivery": "session-receipts", "pid": os.getpid()})
 
         if not self._authorised():
             return self._fail(401, "bad or missing room token")
@@ -319,8 +367,8 @@ class Handler(BaseHTTPRequestHandler):
             if not valid_name(channel):
                 return self._fail(400, "channel required")
             since = int(one("since", "0") or 0)
-            limit = int(one("limit", "200") or 200)
-            return self._send(200, {"messages": STORE.read(channel, since, limit)})
+            limit = max(1, min(500, int(one("limit", "200") or 200)))
+            return self._send(200, {"messages": STORE.read(channel, since, limit, tail=one("tail") == "1")})
 
         if path == "/api/wait":
             channel = one("channel", "")
@@ -329,6 +377,17 @@ class Handler(BaseHTTPRequestHandler):
             since = int(one("since", "0") or 0)
             timeout = float(one("timeout", "25") or 25)
             return self._send(200, {"messages": STORE.wait(channel, since, timeout)})
+
+        if path in ('/api/sessions', '/api/delivery', '/api/inbox'):
+            channel = one('channel', '')
+            if not valid_name(channel):
+                return self._fail(400, 'channel required')
+            if path == '/api/sessions':
+                return self._send(200, {'sessions': STORE.delivery.sessions(channel)})
+            if path == '/api/delivery':
+                return self._send(200, {'deliveries': STORE.delivery.status(channel, one('message'))})
+            rows = STORE.delivery.inbox(one('session', ''), channel)
+            return self._send(200, {'deliveries': [dict(r, message_content=message_by_id(channel, r['message'])) for r in rows]})
 
         if path == "/api/who":
             return self._send(200, {"agents": STORE.who(one("channel"))})
@@ -348,6 +407,33 @@ class Handler(BaseHTTPRequestHandler):
         data = self._body()
 
         try:
+            if path in ('/api/register', '/api/ack', '/api/leave', '/api/channel-claim', '/api/channel-sent'):
+                channel = data.get('channel', '')
+                session = data.get('session', '')
+                if not valid_name(channel) or not valid_name(session):
+                    raise ValueError('valid channel and session required')
+                if path == '/api/register':
+                    if not valid_name(data.get('agent', '')):
+                        raise ValueError('valid agent required')
+                    result = STORE.delivery.register(session, channel, data['agent'], data.get('adapter', 'pull'), data.get('target', ''))
+                elif path == '/api/ack':
+                    result = STORE.delivery.ack(session, channel, data.get('delivery_ids', []))
+                elif path == '/api/leave':
+                    STORE.delivery.close(session, channel)
+                    result = {'closed': True}
+                elif path == '/api/channel-claim':
+                    STORE.delivery.heartbeat(session, channel)
+                    result = {'delivery': STORE.delivery.claim(session, channel, 'claude-channel')}
+                    if result['delivery']:
+                        r = result['delivery']
+                        result['message'] = message_by_id(r['channel'], r['message'])
+                else:
+                    delivery_id = data.get('delivery_id')
+                    if not any(r['id'] == delivery_id for r in STORE.delivery.inbox(session, channel)):
+                        raise ValueError('delivery is not in this session/channel')
+                    STORE.delivery.finish(delivery_id, 'submitted', 'channel event emitted; awaiting acknowledgement')
+                    result = {'submitted': True}
+                return self._send(200, result)
             if path == "/api/post":
                 msg = STORE.post(
                     channel=str(data.get("channel", "")),
@@ -355,8 +441,10 @@ class Handler(BaseHTTPRequestHandler):
                     text=str(data.get("text", "")),
                     to=data.get("to") or None,
                     kind=str(data.get("kind", "say")),
+                    from_session=data.get('from_session'), to_session=data.get('to_session'),
+                    request_id=data.get('request_id'),
                 )
-                return self._send(200, {"posted": msg})
+                return self._send(200, {"posted": msg, "delivery": STORE.delivery.status(msg["channel"], msg["id"])})
 
             if path == "/api/join":
                 STORE.join(
@@ -366,13 +454,28 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return self._send(200, {"joined": True})
 
+            if path == '/api/offer':
+                agent, channel = data.get('session', ''), data.get('channel', '')
+                if not valid_name(agent) or not valid_name(channel):
+                    raise ValueError('session and channel required')
+                value = int(data.get('through', 0))
+                with STORE._lock:
+                    messages = STORE._load_channel_locked(channel)
+                    if value < 0 or value > len(messages):
+                        raise ValueError('offered page exceeds channel')
+                    key = agent + '|' + channel
+                    offered = STORE._state.setdefault('offered', {})
+                    offered[key] = max(value, offered.get(key, 0))
+                    STORE._save_state_locked()
+                return self._send(200, {'offered': value})
+
             if path == "/api/cursor":
                 agent, channel = str(data.get("agent", "")), str(data.get("channel", ""))
                 if not (valid_name(agent) and valid_name(channel)):
                     return self._fail(400, "agent and channel required")
                 return self._send(200, {"cursor": STORE.cursor(agent, channel, int(data.get("cursor", 0)))})
-        except ValueError as exc:
-            return self._fail(400, str(exc))
+        except (ValueError, TypeError, AttributeError) as exc:
+            return self._fail(400, "invalid room request: " + str(exc))
 
         return self._fail(404, "no such endpoint")
 
@@ -385,11 +488,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global STORE
     port = DEFAULT_PORT
     for i, arg in enumerate(sys.argv):
         if arg == "--port" and i + 1 < len(sys.argv):
             port = int(sys.argv[i + 1])
+    os.makedirs(ROOT, mode=0o700, exist_ok=True)
+    owner = open(os.path.join(ROOT, 'daemon.lock'), 'a')
+    try:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit('another daemon owns this room data directory')
+    # Bind before recovering or dispatching. An autostart collision must not
+    # reinterpret a live send as crashed, or submit work from a second daemon.
     httpd = ThreadingHTTPServer((BIND, port), Handler)
+    STORE = Store()
+    threading.Thread(target=deliver_forever, daemon=True).start()
     httpd.daemon_threads = True
     sys.stderr.write("agent room listening on http://%s:%d  (messages in %s)\n" % (BIND, port, ROOT))
     sys.stderr.flush()

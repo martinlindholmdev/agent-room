@@ -264,6 +264,8 @@ button{background:none; border:0; cursor:pointer; padding:0}
     <div id="chans"></div>
     <div class="sect">Agents</div>
     <div id="roster"></div>
+    <div class="sect">Delivery receipts</div>
+    <div id="deliveries" style="padding:0 16px;font-size:12px;overflow-wrap:anywhere">No receipts yet</div>
     <div id="railfoot">
       <button id="theme">theme</button>
       <button id="newchan">new channel</button>
@@ -285,6 +287,7 @@ button{background:none; border:0; cursor:pointer; padding:0}
       </div>
       <div id="foot">
         <span>posting as</span><input id="me" value="martin" spellcheck="false" aria-label="Your name">
+        <label for="recipient">to</label><select id="recipient" aria-label="Recipient session"><option value="">Everyone in this channel</option></select>
         <span id="note">Enter sends · Shift+Enter adds a line</span>
       </div>
     </div>
@@ -500,6 +503,8 @@ button{background:none; border:0; cursor:pointer; padding:0}
     if (name === channel) return;
     channel = name; localStorage.setItem('room.channel', channel);
     lastSeq = 0; pinned = true; firstUnseen = 0;
+    $("recipient").innerHTML = '<option value="">Everyone in this channel</option>';
+    $("deliveries").textContent = "Loading receipts";
     delete unread[channel]; title();
     $('cname').textContent = channel;
     $('text').placeholder = 'Message #' + channel;
@@ -507,7 +512,7 @@ button{background:none; border:0; cursor:pointer; padding:0}
   }
 
   function load(){
-    return api('/api/messages?channel=' + encodeURIComponent(channel) + '&limit=300')
+    return api('/api/messages?channel=' + encodeURIComponent(channel) + '&limit=300&tail=1')
       .then(function(d){ draw(d.messages, true); toBottom(); })
       .catch(function(){
         resetStream();
@@ -516,7 +521,32 @@ button{background:none; border:0; cursor:pointer; padding:0}
       });
   }
 
+  function refreshDelivery(){
+    var here = channel;
+    api('/api/delivery?channel=' + encodeURIComponent(here)).then(function(d){
+      if (here !== channel) return;
+      var rows = d.deliveries.slice(-20);
+      $('deliveries').innerHTML = rows.length ? rows.map(function(r){
+        return '<p>' + esc(r.session || 'No route') + ': <b>' + esc(r.state) + '</b><br>' + esc(r.reason || 'Receiver confirmed reading') + '</p>';
+      }).join('') : 'No receipts yet';
+    }).catch(function(){ if (here === channel) $('deliveries').textContent = 'Delivery status unavailable'; });
+    api('/api/sessions?channel=' + encodeURIComponent(here)).then(function(d){
+      if (here !== channel) return;
+      var selected = $('recipient').value;
+      $('recipient').innerHTML = '<option value="">Everyone in this channel</option>' + d.sessions.map(function(r){
+        return '<option value="' + esc(r.id) + '">' + esc(r.agent + ' · ' + r.id + ' · ' + r.adapter) + '</option>';
+      }).join('');
+      if (d.sessions.some(function(r){return r.id === selected;})) $('recipient').value = selected;
+      else if (selected){
+        var option = document.createElement('option'); option.value = selected; option.textContent = selected + ' (unavailable)';
+        $('recipient').appendChild(option); $('recipient').value = selected;
+      }
+    }).catch(function(){});
+  }
+  setInterval(refreshDelivery, 5000);
+
   function refreshRails(){
+    refreshDelivery();
     api('/api/channels').then(function(d){ drawChannels(d.channels); }).catch(function(){});
     api('/api/who?channel=' + encodeURIComponent(channel)).then(function(d){ drawRoster(d.agents); }).catch(function(){});
   }
@@ -572,7 +602,11 @@ button{background:none; border:0; cursor:pointer; padding:0}
     $('note').classList.remove('warn'); $('note').textContent = 'Enter sends · Shift+Enter adds a line';
     api('/api/post', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({channel: channel, from: me, text: text})
+      body: JSON.stringify({channel: channel, from: me, text: text, to_session: $("recipient").value || null, request_id: crypto.randomUUID()})
+    }).then(function(d){
+      refreshDelivery();
+      var states = (d.delivery || []).map(function(r){ return r.state + (r.reason ? ': ' + r.reason : ''); });
+      $('note').textContent = states.length ? 'Delivery: ' + states.join(' · ') + '. Submitted does not mean read.' : 'Posted to the room.';
     }).catch(function(){
       $('text').value = text; grow();
       $('note').classList.add('warn');
