@@ -1,6 +1,6 @@
 """Desktop room MCP, bound to one exact native conversation.
 
-Use a distinct MCP name (agent-room-desktop) beside the installed legacy room.
+Resolve the host's native identity against explicitly connected conversations.
 Never implicitly acknowledges on join, notification, read or tool response.
 """
 import json
@@ -34,14 +34,19 @@ def incoming(row, message):
             (json.dumps(row['id']), json.dumps(message['from_session']), json.dumps(message['id']), row['session'], json.dumps(message, ensure_ascii=False)))
 
 
-def run(root, identity, claude_channel=False):
-    if not identity:
-        raise SystemExit('exact --binding required; connect this conversation in Agent Room first')
-    snapshot=local_call(root,'snapshot',{})
-    binding=next((b for b in snapshot['bindings'] if b['id']==identity),None)
+def resolve_binding(bindings, identity=None, claude_channel=False):
     native=os.environ.get('CLAUDE_CODE_SESSION_ID' if claude_channel else 'CODEX_THREAD_ID')
-    if not binding or not native or native!=binding['native']:
-        raise SystemExit('Host native identity is unavailable or differs from this binding. Do not install a static binding globally. Keep the existing verified room connection.')
+    app='claude-channel' if claude_channel else 'codex-queue'
+    matches=[b for b in bindings if native and b['native']==native and b['app']==app and (not identity or b['id']==identity)]
+    if len(matches)!=1:
+        raise SystemExit('Connect this exact host session in Agent Room first. Host identity must be supplied by the app; never set a shared session ID in MCP configuration.')
+    return matches[0]
+
+
+def run(root, identity, claude_channel=False):
+    snapshot=local_call(root,'snapshot',{})
+    binding=resolve_binding(snapshot['bindings'],identity,claude_channel)
+    identity,native=binding['id'],binding['native']
     generation=binding['generation']
     lease={}
     write_lock = threading.Lock()
