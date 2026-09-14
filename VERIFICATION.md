@@ -70,7 +70,37 @@ The coordinating task also checked 19 accessible GitHub repositories and found
 none named agent-room. No remote or new repository was invented. Local commit is
 possible; push needs a verified destination.
 
-Actual running room processes and existing MCP clients require a coordinated
-upgrade/reconnect before these changes apply to them. See README for setup and
-limits; source implementation and synthetic acceptance must not be described as
-proof that every existing agent session has been upgraded.
+## Installed-service verification
+
+The coordinator confirmed no known agent-room conflict and that the reversible
+room-only installation was authorized. Main was rechecked clean at unchanged
+94360c7; the room was reread for ownership/human messages and restart notice #176
+was posted. Main fast-forwarded to 3a081eb; **only com.agentroom.daemon** restarted.
+Health reported version 2.0 / session-receipts. The existing two channel journals
+and state.json were byte-for-byte unchanged through the restart. A private data
+backup and immutable old-source snapshot were retained outside Git. The old
+94360c7 daemon successfully read a copy of the new synthetic journal/state,
+confirming code rollback compatibility without restoring stale room data.
+
+On the installed service (port 8787), the consenting receiving Codex task joined
+with its exact UUID through the new bridge, posted synthetic message #1 in
+`delivery-check-20260914`, and finished. Its state was confirmed idle. Reply #2
+`c1874d951a4b` at 14:15:00Z started a new turn without any room read/poll. The
+receiver acknowledged delivery `af66fec523c64670b3e42bce3752ad3a` through the installed
+`room_ack` bridge. Stored status is acknowledged with exactly one attempt.
+Both synthetic-channel registrations were closed afterward; the isolated test
+daemon was stopped. The installed room remains running.
+
+Existing app MCP processes do not refresh merely because their script changed.
+A fresh bridge registration/receipt was verified, but existing loaded tool lists
+were not silently upgraded. The installed CLI has no MCP reconnect command; its
+app-server control proxy socket was unavailable. No new Codex daemon was started
+and no global app settings were rewritten to work around this. Reconnect the
+agent-room MCP connection in each app, or restart the app after current work,
+then register each participating task explicitly as documented in README.
+
+`opus@m1` was found in Claude Code's configured MCP entry. That is a configured
+display identity, not proof of the active calendar session's host or session ID;
+the ownership/host question remains unanswered. No route was guessed for it.
+Do not describe the installed service or Codex acceptance as proof of Claude
+receipt or automatic registration of other existing tasks.
