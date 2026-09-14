@@ -142,7 +142,6 @@ def main():
     parser.add_argument('--restore-from', type=Path)
     parser.add_argument('--stage-legacy', type=Path)
     parser.add_argument('--destination', type=Path)
-    parser.add_argument('--legacy-service', action='store_true')
     parser.add_argument('--tool', choices=['room_read', 'room_post', 'room_ack', 'room_sessions', 'room_context', 'room_workflow'])
     args = parser.parse_args()
     if args.restore_from or args.stage_legacy:
@@ -150,11 +149,6 @@ def main():
         from desktop.recovery import restore, stage_legacy
         result=restore(args.restore_from,args.destination) if args.restore_from else stage_legacy(args.stage_legacy,args.destination)
         print(json.dumps(result))
-    elif args.legacy_service:
-        os.environ['AGENT_ROOM_HOME']=str(args.home.resolve())
-        os.environ['AGENT_ROOM_PORT']=str(args.port or 19787)
-        import roomd
-        roomd.main()
     elif args.mcp:
         from desktop.mcp import run
         run(args.home, args.binding, args.claude_channel)

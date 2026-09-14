@@ -30,8 +30,6 @@ import {
 import "./styles.css";
 
 type Session = {
-  transport?: string;
-  legacy_session?: string;
   id: string;
   native: string;
   app: string;
@@ -1130,16 +1128,14 @@ function App() {
                           {appName(p.app)} · {p.device_name}
                         </small>
                         <span className="participant-status">
-                          {p.transport === "local-room"
-                            ? "Existing local connection"
-                            : p.app === "codex-queue"
-                              ? "Next-turn delivery"
-                              : p.app === "pull"
-                                ? "Read on demand"
-                                : s.bindings.find((b) => b.id === p.id)
-                                      ?.bridge_connected
-                                  ? "Bridge connected"
-                                  : "Bridge setup needed"}
+                          {p.app === "codex-queue"
+                            ? "Next-turn delivery"
+                            : p.app === "pull"
+                              ? "Read on demand"
+                              : s.bindings.find((b) => b.id === p.id)
+                                    ?.bridge_connected
+                                ? "Bridge connected"
+                                : "Bridge setup needed"}
                         </span>
                       </div>
                     </div>

@@ -324,7 +324,7 @@ class Node(Database):
                     if self.online and not self.get('paused', False):
                         # Paused sessions stay registered and queued without being
                         # re-routed. Do not mark them closed and lose pending work.
-                        paused = [b['id'] for b in self.bindings() if b.get('paused') or b.get('transport')=='local-room']
+                        paused = [b['id'] for b in self.bindings() if b.get('paused')]
                         dispatch_one(self.delivery, self.source_message, incoming, paused)
                         self.report()
                 except Exception:
@@ -334,10 +334,6 @@ class Node(Database):
             thread = threading.Thread(target=fn, daemon=True)
             thread.start()
             self.threads.append(thread)
-        from desktop.legacy import Legacy
-        legacy=Legacy(self,self.get('legacy_port',8787))
-        thread=threading.Thread(target=legacy.run,daemon=True)
-        thread.start();self.threads.append(thread)
 
     def bridge_open(self, identity, native, app):
         binding = self.binding(identity)
@@ -426,19 +422,6 @@ class Node(Database):
                     bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in self.bindings()])
 
     def control(self, action, data):
-        if action in ('discover-local','bind-local'):
-            from desktop.legacy import Legacy
-            legacy=Legacy(self,self.get('legacy_port',8787))
-            sessions=legacy.discover()
-            if action=='discover-local':return {'sessions':sessions}
-            exact=next((s for s in sessions if s['id']==data['session']),None)
-            require(exact and exact['adapter'] in ('codex-queue','claude-channel'), 'existing push route required')
-            native=exact['target'] if exact['adapter']=='codex-queue' else data['native']
-            binding=self.bind({'native':native,'app':exact['adapter'],'title':data['title']})
-            binding.update(transport='local-room',legacy_session=exact['id'])
-            self.save_binding(binding)
-            legacy.open()
-            return binding
         if action == 'unlock':
             if hasattr(self.vault,'retry'):self.vault.retry()
             self.credential()

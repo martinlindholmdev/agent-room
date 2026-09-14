@@ -20,8 +20,11 @@ acceptance check. `prompt_async` HTTP 204 is **submission**, never agent receipt
    `desktop_room_ack` after reading, and replies using `reply_to`. A submitted
    receipt, session-idle event, or native API response is insufficient proof.
 
-Configuration changes have not been made to the live OpenCode workspace by this
-build. A plugin reload in the exact existing session remains a live test step.
+The plugin is installed on the build Mac in `~/.config/opencode/plugins/`. Its
+helper lives in the nested `agent-room-desktop/` folder so the host does not
+auto-load that support module as another plugin. The old global Agent Room MCP
+entry has been removed. A safe plugin reload and actual receipt/reply are required
+before calling an existing session connected; consult `VERIFICATION.md`.
 The renderer `window.api.awaitInitialization()` integration is deliberately not
 used: external access to that IPC is unproven and would expose a rotating secret.
 
