@@ -12,7 +12,7 @@ fn launch(binary: &PathBuf, root: &PathBuf) -> std::io::Result<Child> {
 #[tauri::command]
 async fn control(state: tauri::State<'_, Runtime>, action: String, data: Value) -> Result<Value,String> {
     // The renderer gets only this action allowlist, no arbitrary URLs or shell.
-    const ALLOWED: &[&str] = &["snapshot","create","join-request","join-finish","bind","send","object","pause","pair-create","pair-approve","revoke","cancel","backup","unlock"];
+    const ALLOWED: &[&str] = &["snapshot","create","join-request","join-finish","bind","send","object","pause","pair-create","pair-approve","revoke","cancel","backup","unlock","discover-local","bind-local"];
     if !ALLOWED.contains(&action.as_str()) { return Err("Unsupported action".into()); }
     let ready: Value = serde_json::from_slice(&std::fs::read(state.root.join("ready.json")).map_err(|_| "Starting local helper…")?).map_err(|_| "Helper is restarting")?;
     let port = ready["port"].as_u64().ok_or("Helper port missing")?;

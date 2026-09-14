@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from desktop.protocol import require
 
 
@@ -60,7 +60,11 @@ def verify(source):
     source=Path(source).resolve()
     data=json.loads((source/'manifest.json').read_text())
     require(data.get('format')==1, 'unsupported backup format')
+    require(data.get('kind') in ('desktop-profile','legacy-v2'), 'unsupported backup type')
     for filename, expected in data['files'].items():
+        require(isinstance(filename,str) and '\\' not in filename and '\x00' not in filename, 'invalid backup member')
+        relative=PurePosixPath(filename)
+        require(not relative.is_absolute() and '..' not in relative.parts and str(relative)==filename and filename not in ('','.','manifest.json'), 'noncanonical backup member')
         path=source/filename
         require(path.resolve().is_relative_to(source) and not path.is_symlink(), 'invalid backup path')
         require(checksum(path)==expected, 'backup checksum mismatch')
@@ -81,8 +85,18 @@ def restore(source, destination):
     try:
         for filename in data['files']:
             target=temporary/filename
+            require(target.resolve().is_relative_to(temporary.resolve()), 'restore member escapes destination')
             target.parent.mkdir(parents=True,exist_ok=True)
             shutil.copy2(source/filename,target)
+        # A backup cannot prove that a native prompt was not executed after it
+        # was taken. Never auto-dispatch pre-backup pending work after restore.
+        delivery=temporary/'delivery.sqlite3'
+        if delivery.exists():
+            db=sqlite3.connect(delivery)
+            try:
+                db.execute("UPDATE deliveries SET state='uncertain',reason='Restored backup; native outcome must be reconciled' WHERE state IN ('pending','sending','relaying','unavailable')")
+                db.commit()
+            finally:db.close()
         os.replace(temporary,destination)
     except Exception:
         shutil.rmtree(temporary)

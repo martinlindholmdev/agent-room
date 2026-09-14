@@ -74,6 +74,9 @@ class Hub(Database):
           PRIMARY KEY(device,room));
         PRAGMA user_version=1;
         ''')
+        if 'revision' not in [r[1] for r in self.db.execute('PRAGMA table_info(receipts)')]:
+            self.db.execute('ALTER TABLE receipts ADD COLUMN revision INTEGER DEFAULT -1')
+            self.db.commit()
 
     def bootstrap(self, name, token, device=None):
         with self.lock, self.db:
@@ -178,7 +181,7 @@ class Hub(Database):
         require(event.get('version') == VERSION, 'unsupported protocol version')
         require(isinstance(event.get('id'), str) and len(event['id']) <= 128, 'stable event ID required')
         room, kind, body = event.get('room'), event.get('kind'), event.get('body')
-        require(isinstance(body, dict) and len(encoded(body)) <= MAX_BODY, 'invalid or oversized event')
+        require(isinstance(body, dict) and len(encoded(body).encode('utf-8')) <= MAX_BODY, 'invalid or oversized event')
         require(kind in ('message', 'receipt', 'object'), 'unsupported event kind')
         sender = event.get('sender') or ''
         original_body = encoded(body)
@@ -207,7 +210,7 @@ class Hub(Database):
                 if reply:
                     require(self.db.execute('SELECT 1 FROM events WHERE id=? AND room=? AND kind=?', (reply, room, 'message')).fetchone(), 'reply source missing or in another room')
                 for target in targets:
-                    self.db.execute('INSERT INTO receipts VALUES(?,?,?,?,?)', (event['id'], target, 'waiting', 'Waiting for device', time.time()))
+                    self.db.execute('INSERT INTO receipts(message,target,state,reason,updated) VALUES(?,?,?,?,?)', (event['id'], target, 'waiting', 'Waiting for device', time.time()))
             elif kind == 'receipt':
                 target = body.get('target')
                 require(sender == target, 'receipt requires exact receiving session')
@@ -217,9 +220,13 @@ class Hub(Database):
                 require(row, 'receipt target does not belong to message')
                 # Receipt updates may arrive out of order after reconnect. Never regress
                 # explicit acknowledgement or a definitive/ambiguous native dispatch.
-                allowed = row['state'] == 'waiting' or state == 'acknowledged' or (row['state'] == 'pending' and state != 'pending')
+                revision=body.get('revision',row['revision']+1)
+                require(isinstance(revision,int) and revision>=0,'invalid receipt revision')
+                allowed = (row['state'] == 'waiting' or state == 'acknowledged' or (row['state'] == 'pending' and state != 'pending')
+                           or (row['state']=='unavailable' and state=='pending' and body.get('recovered_unsent') is True))
+                allowed = allowed and revision > row['revision'] and row['state']!='acknowledged'
                 if allowed:
-                    self.db.execute('UPDATE receipts SET state=?,reason=?,updated=? WHERE message=? AND target=?', (state, str(body.get('reason', ''))[:300], time.time(), body['message'], target))
+                    self.db.execute('UPDATE receipts SET state=?,reason=?,updated=?,revision=? WHERE message=? AND target=?', (state, str(body.get('reason', ''))[:300], time.time(), revision, body['message'], target))
             else:
                 self.object_event(actor, room, sender, json.loads(original_body))
             self.db.execute('INSERT INTO events(id,room,device,sender,kind,body,created) VALUES(?,?,?,?,?,?,?)', (event['id'], room, actor['id'], sender, kind, original_body, time.time()))
@@ -292,19 +299,42 @@ class Hub(Database):
                 if rows or time.monotonic() >= deadline:
                     page, size = [], 0
                     for row in rows:
-                        if page and size+len(row['body']) > 1_000_000:
+                        event = self.decode(row)
+                        byte_count = len(encoded(event).encode('utf-8')) + 2
+                        if page and size+byte_count > 1_000_000:
                             break
-                        page.append(self.decode(row))
-                        size += len(row['body'])
+                        page.append(event)
+                        size += byte_count
                     return page
                 self.changed.wait(min(1, deadline-time.monotonic()))
 
-    def snapshot(self, actor, room):
+    def snapshot(self, actor, room, cursor=None):
+        cursor = cursor or {}
+        require(isinstance(cursor, dict), 'invalid snapshot cursor')
         with self.lock:
             self.access(actor, room)
-            return {'rooms': self.rows('SELECT rooms.* FROM rooms JOIN grants ON rooms.id=grants.room WHERE grants.device=?', (actor['id'],)),
-                    'sessions': self.rows('SELECT s.*,d.name AS device_name FROM sessions s JOIN devices d ON s.device=d.id WHERE s.room=?', (room,)),
-                    'devices': self.rows('SELECT d.id,d.name,d.active,d.role FROM devices d JOIN grants g ON d.id=g.device WHERE g.room=?', (room,)),
-                    'pairing': self.rows('SELECT id,name,device,expires,approved FROM pairing WHERE room=? AND used=0 AND expires>? AND device IS NOT NULL', (room, time.time())) if actor['role'] == 'admin' else [],
-                    'receipts': self.rows('SELECT r.* FROM receipts r JOIN events e ON r.message=e.id WHERE e.room=?', (room,)),
-                    'objects': [dict(r, data=json.loads(r['data'])) for r in self.rows('SELECT * FROM objects WHERE room=?', (room,))]}
+            queries = {
+                'rooms': ('SELECT rooms.* FROM rooms JOIN grants ON rooms.id=grants.room WHERE grants.device=? ORDER BY rooms.id', (actor['id'],)),
+                'sessions': ('SELECT s.*,d.name AS device_name FROM sessions s JOIN devices d ON s.device=d.id WHERE s.room=? ORDER BY s.id', (room,)),
+                'devices': ('SELECT d.id,d.name,d.active,d.role FROM devices d JOIN grants g ON d.id=g.device WHERE g.room=? ORDER BY d.id', (room,)),
+                'pairing': ('SELECT id,name,device,expires,approved FROM pairing WHERE room=? AND used=0 AND expires>? AND device IS NOT NULL ORDER BY id', (room,time.time())),
+                'receipts': ('SELECT r.* FROM receipts r JOIN events e ON r.message=e.id WHERE e.room=? ORDER BY r.message,r.target', (room,)),
+                'objects': ('SELECT * FROM objects WHERE room=? ORDER BY id', (room,)),
+            }
+            result, next_cursor, size, more = {}, {}, 0, False
+            for name, (sql, args) in queries.items():
+                offset = cursor.get(name, 0)
+                require(isinstance(offset, int) and 0 <= offset <= 10_000_000, 'invalid snapshot offset')
+                rows = self.rows(sql+' LIMIT 201 OFFSET ?', args+(offset,)) if name != 'pairing' or actor['role']=='admin' else []
+                selected = []
+                for row in rows[:200]:
+                    if name == 'objects':row['data'] = json.loads(row['data'])
+                    byte_count = len(encoded(row).encode('utf-8')) + 2
+                    if size + byte_count > 1_000_000:break
+                    selected.append(row)
+                    size += byte_count
+                result[name] = selected
+                next_cursor[name] = offset + len(selected)
+                more = more or len(rows) > len(selected)
+            result['next'] = next_cursor if more else None
+            return result

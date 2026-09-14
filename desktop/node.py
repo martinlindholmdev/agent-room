@@ -35,7 +35,9 @@ class Remote:
                                         headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+self.token})
         try:
             with urllib.request.build_opener(NoRedirect()).open(request, timeout=32) as response:
-                return json.loads(response.read(2_000_000))
+                payload=response.read(2_000_001)
+                require(len(payload)<=2_000_000, 'hub response exceeds protocol byte limit')
+                return json.loads(payload)
         except urllib.error.HTTPError as exc:
             # Never surface response bodies, URLs or native credentials in logs.
             if exc.code in (400, 401, 403, 409):
@@ -51,7 +53,7 @@ def hub_call(hub, token, action, data):
     actor = hub.auth(token)
     room = data.get('room', 'general')
     if action == 'snapshot':
-        return hub.snapshot(actor, room)
+        return hub.snapshot(actor, room, data.get('cursor'))
     if action == 'events':
         return {'events': hub.stream(actor, room, data.get('after', 0), data.get('timeout', 0))}
     if action == 'event':
@@ -182,7 +184,7 @@ class Node(Database):
         binding = self.binding(sender) if sender else None
         event = {'version': VERSION, 'id': event_id or uid(), 'room': self.get('room', 'general'), 'sender': sender,
                  'generation': binding['generation'] if binding else None, 'kind': kind, 'body': body}
-        require(len(encoded(event)) <= 205_000, 'event too large')
+        require(len(encoded(event).encode('utf-8')) <= 205_000, 'event too large')
         with self.lock, self.db:
             old = self.db.execute('SELECT event FROM outbox WHERE id=?', (event['id'],)).fetchone()
             if old:
@@ -227,7 +229,14 @@ class Node(Database):
                     self.db.execute("UPDATE outbox SET state='sent',error='' WHERE id=?", (row['id'],))
         events = self.call('events', {'room': self.get('room'), 'after': self.get('cursor', 0)})['events']
         self.receive(events)
-        snapshot = self.call('snapshot', {'room': self.get('room')})
+        snapshot = {}
+        cursor = None
+        while True:
+            page = self.call('snapshot', {'room': self.get('room'), 'cursor': cursor})
+            for key,value in page.items():
+                if key != 'next':snapshot.setdefault(key,[]).extend(value)
+            cursor = page.get('next')
+            if not cursor:break
         self.put('snapshot', snapshot)
         self.online, self.error = True, ''
 
@@ -271,12 +280,14 @@ class Node(Database):
     def report(self):
         for row in self.delivery.status(self.get('room', 'general')):
             state = row['state']
-            if state == 'sending':
+            if state in ('sending', 'relaying'):
                 continue
             previous = self.rows('SELECT state FROM reports WHERE id=?', (row['id'],))
             if previous and previous[0]['state'] == state:
                 continue
-            self.enqueue('receipt', {'message': row['message'], 'target': row['session'], 'state': state, 'reason': row['reason']}, row['session'], event_id='receipt:'+row['id']+':'+state)
+            self.enqueue('receipt', {'message': row['message'], 'target': row['session'], 'state': state, 'reason': row['reason'],
+                         'revision': row['revision'], 'recovered_unsent': state=='pending' and row['reason']=='Reconnected; never submitted'},
+                         row['session'], event_id='receipt:'+row['id']+':'+str(row['revision']))
             with self.lock, self.db:
                 self.db.execute('INSERT INTO reports VALUES(?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state', (row['id'], state))
 
@@ -313,7 +324,7 @@ class Node(Database):
                     if self.online and not self.get('paused', False):
                         # Paused sessions stay registered and queued without being
                         # re-routed. Do not mark them closed and lose pending work.
-                        paused = [b['id'] for b in self.bindings() if b.get('paused')]
+                        paused = [b['id'] for b in self.bindings() if b.get('paused') or b.get('transport')=='local-room']
                         dispatch_one(self.delivery, self.source_message, incoming, paused)
                         self.report()
                 except Exception:
@@ -323,6 +334,10 @@ class Node(Database):
             thread = threading.Thread(target=fn, daemon=True)
             thread.start()
             self.threads.append(thread)
+        from desktop.legacy import Legacy
+        legacy=Legacy(self,self.get('legacy_port',8787))
+        thread=threading.Thread(target=legacy.run,daemon=True)
+        thread.start();self.threads.append(thread)
 
     def bridge_open(self, identity, native, app):
         binding = self.binding(identity)
@@ -331,6 +346,9 @@ class Node(Database):
         self.bridge_leases[identity] = lease
         self.bridge_seen[identity] = time.monotonic()
         self.delivery.register(identity, binding['room'], app, app)
+        with self.delivery.lock,self.delivery.db:
+            self.delivery.db.execute("UPDATE deliveries SET state='pending',reason='Reconnected; never submitted',updated=? WHERE session=? AND channel=? AND attempts=0 AND state='unavailable' AND reason IN ('session closed','session closed before route was saved')",(time.time(),identity,binding['room']))
+        self.work.set()
         return {'lease': lease, 'generation': binding['generation']}
 
     def bridge_next(self, identity, lease, timeout=20):
@@ -408,6 +426,19 @@ class Node(Database):
                     bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in self.bindings()])
 
     def control(self, action, data):
+        if action in ('discover-local','bind-local'):
+            from desktop.legacy import Legacy
+            legacy=Legacy(self,self.get('legacy_port',8787))
+            sessions=legacy.discover()
+            if action=='discover-local':return {'sessions':sessions}
+            exact=next((s for s in sessions if s['id']==data['session']),None)
+            require(exact and exact['adapter'] in ('codex-queue','claude-channel'), 'existing push route required')
+            native=exact['target'] if exact['adapter']=='codex-queue' else data['native']
+            binding=self.bind({'native':native,'app':exact['adapter'],'title':data['title']})
+            binding.update(transport='local-room',legacy_session=exact['id'])
+            self.save_binding(binding)
+            legacy.open()
+            return binding
         if action == 'unlock':
             if hasattr(self.vault,'retry'):self.vault.retry()
             self.credential()
@@ -453,5 +484,9 @@ class Node(Database):
         if action == 'bridge-sent':
             return self.bridge_sent(data['binding'], data['lease'], data['delivery_id'], data['state'])
         if action == 'tool':
+            binding=self.binding(data['binding'])
+            require(data.get('native')==binding['native'] and data.get('generation')==binding['generation'], 'native identity or connector generation changed')
+            if binding['app'] in ('opencode-bridge','claude-channel'):
+                require(data.get('lease') and secrets.compare_digest(data['lease'],self.bridge_leases.get(binding['id'],'')), 'stale or missing native bridge lease')
             return self.tool(data['binding'], data['name'], data.get('args', {}))
         raise ValueError('unknown local action')

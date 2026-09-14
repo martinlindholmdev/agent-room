@@ -9,6 +9,17 @@ from desktop.recovery import backup, restore, stage_legacy, verify
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_restore_rejects_parent_and_absolute_manifest_names(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);source=root/'source/bundle';source.mkdir(parents=True)
+            (source/'payload').write_text('replacement')
+            sibling=root/'target/bundle';sibling.mkdir(parents=True);(sibling/'payload').write_text('preserve')
+            for member in ('../bundle/payload',str(source/'payload')):
+                (source/'manifest.json').write_text(json.dumps({'format':1,'kind':'desktop-profile','files':{member:hashlib.sha256(b'replacement').hexdigest()}}))
+                with self.assertRaises(ValueError):restore(source,root/'target/profile')
+                self.assertEqual('preserve',(sibling/'payload').read_text())
+
     def test_consistent_backup_restore_and_stale_restore_refusal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)

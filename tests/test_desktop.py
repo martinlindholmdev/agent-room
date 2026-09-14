@@ -176,7 +176,7 @@ class HubTests(unittest.TestCase):
         for actor in (a,b):
             self.hub.event(self.actor, self.object('claim', {'scope': 'repo/fixture', 'expires': time.time()+60}, sender=actor['id']))
         claims = [o for o in self.hub.snapshot(self.actor,'general')['objects'] if o['kind']=='claim']
-        self.assertEqual(1, len(claims[1]['data']['conflicts']))
+        self.assertEqual([0,1], sorted(len(c['data']['conflicts']) for c in claims))
 
     def test_future_schema_refused(self):
         path=Path(self.tmp.name)/'future.sqlite3'
@@ -248,6 +248,23 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(2,len([e for e in self.node.snapshot()['events'] if e['kind']=='message']))
         self.assertIsNone(self.node.bridge_next(binding['id'],second['lease'],0)['delivery'])
 
+    def test_bridge_reconnect_recovers_only_definitely_unsent_work(self):
+        binding=self.bind('opencode-bridge')
+        self.node.enqueue('message',{'text':'Waiting for the same session','targets':[binding['id']]})
+        self.node.sync_once();self.node.report();self.node.sync_once()
+        with self.node.delivery.db:self.node.delivery.db.execute('UPDATE sessions SET seen=0')
+        self.node.delivery.expire_channels();self.node.report();self.node.sync_once()
+        self.assertEqual('unavailable',self.node.snapshot()['receipts'][0]['state'])
+        opened=self.node.bridge_open(binding['id'],binding['native'],binding['app'])
+        self.node.report();self.node.sync_once()
+        self.assertEqual('pending',self.node.snapshot()['receipts'][0]['state'])
+        with self.node.delivery.db:self.node.delivery.db.execute('UPDATE deliveries SET updated=0')
+        row=self.node.bridge_next(binding['id'],opened['lease'],0)['delivery']
+        self.assertIsNotNone(row)
+        self.node.bridge_sent(binding['id'],opened['lease'],row['id'],'uncertain')
+        self.node.bridge_open(binding['id'],binding['native'],binding['app'])
+        self.assertEqual('uncertain',self.node.delivery.status('general')[0]['state'])
+
     def test_complete_read_cursor_and_wrong_session_ack(self):
         first,second=self.bind(),self.bind()
         for i in range(3):self.node.enqueue('message',{'text':str(i)*25000,'targets':[first['id']]})
@@ -288,6 +305,29 @@ class NodeTests(unittest.TestCase):
         for url in ('http://example.org','https://user:password@example.org','https://example.org/?token=secret','file:///tmp/hub'):
             with self.assertRaises(ValueError):hub_url(url)
         self.assertEqual('https://example.org',hub_url('https://example.org/'))
+
+    def test_unicode_event_and_snapshot_pages_fit_actual_http_byte_limit(self):
+        server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.node,'',True))
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        remote=Remote('http://127.0.0.1:%d'%server.server_port,self.vault.get('device'),True)
+        try:
+            for i in range(20):
+                remote.call('event',{'version':1,'id':uid(),'room':'general','kind':'object','body':{'id':uid(),'version':1,'type':'decision','data':{'text':'界'*40000,'state':'proposed'}}})
+            cursor,count=0,0
+            while True:
+                page=remote.call('events',{'room':'general','after':cursor})
+                self.assertLess(len(encoded(page).encode()),1_010_000)
+                if not page['events']:break
+                count+=len(page['events']);cursor=page['events'][-1]['seq']
+            self.assertEqual(20,count)
+            cursor,count=None,0
+            while True:
+                page=remote.call('snapshot',{'room':'general','cursor':cursor})
+                self.assertLess(len(encoded(page).encode()),1_010_000)
+                count+=len(page['objects']);cursor=page['next']
+                if not cursor:break
+            self.assertEqual(20,count)
+        finally:server.shutdown();server.server_close()
 
 
 if __name__=='__main__':unittest.main()

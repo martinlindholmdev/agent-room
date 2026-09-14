@@ -4,6 +4,7 @@ Use a distinct MCP name (agent-room-desktop) beside the installed legacy room.
 Never implicitly acknowledges on join, notification, read or tool response.
 """
 import json
+import os
 import sys
 import threading
 import time
@@ -36,6 +37,13 @@ def incoming(row, message):
 def run(root, identity, claude_channel=False):
     if not identity:
         raise SystemExit('exact --binding required; connect this conversation in Agent Room first')
+    snapshot=local_call(root,'snapshot',{})
+    binding=next((b for b in snapshot['bindings'] if b['id']==identity),None)
+    native=os.environ.get('CLAUDE_CODE_SESSION_ID' if claude_channel else 'CODEX_THREAD_ID')
+    if not binding or not native or native!=binding['native']:
+        raise SystemExit('Host native identity is unavailable or differs from this binding. Do not install a static binding globally. Keep the existing verified room connection.')
+    generation=binding['generation']
+    lease={}
     write_lock = threading.Lock()
     stopped = threading.Event()
     def send(value):
@@ -43,13 +51,15 @@ def run(root, identity, claude_channel=False):
             sys.stdout.write(json.dumps(value, ensure_ascii=False)+'\n')
             sys.stdout.flush()
     def call(name, args):
-        return local_call(root, 'tool', {'binding': identity, 'name': name, 'args': args})
+        return local_call(root, 'tool', {'binding': identity,'native':native,'generation':generation,'lease':lease.get('value'),'name': name, 'args': args})
     def channel():
         while not stopped.is_set():
             try:
                 snapshot = local_call(root, 'snapshot', {})
                 binding = next(b for b in snapshot['bindings'] if b['id'] == identity)
                 opened = local_call(root, 'bridge-open', {'binding': identity, 'native': binding['native'], 'app': 'claude-channel'})
+                if opened['generation']!=generation:raise RuntimeError('helper generation changed; reconnect MCP')
+                lease['value']=opened['lease']
                 while not stopped.is_set():
                     result = local_call(root, 'bridge-next', {'binding': identity, 'lease': opened['lease']})
                     if result['delivery']:

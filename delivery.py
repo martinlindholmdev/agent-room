@@ -27,9 +27,12 @@ class Delivery:
           state TEXT, attempts INTEGER DEFAULT 0, reason TEXT, updated REAL, human INTEGER DEFAULT 0,
           UNIQUE(message, channel, session));
         ''')
-        for table, column, definition in [('sessions', 'seen', 'REAL DEFAULT 0'), ('deliveries', 'human', 'INTEGER DEFAULT 0')]:
+        for table, column, definition in [('sessions', 'seen', 'REAL DEFAULT 0'), ('deliveries', 'human', 'INTEGER DEFAULT 0'), ('deliveries', 'revision', 'INTEGER DEFAULT 0')]:
             if column not in [r[1] for r in self.db.execute('PRAGMA table_info(' + table + ')')]:
                 self.db.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+        self.db.executescript('''CREATE TRIGGER IF NOT EXISTS delivery_revision
+          AFTER UPDATE OF state ON deliveries WHEN NEW.state <> OLD.state
+          BEGIN UPDATE deliveries SET revision=OLD.revision+1 WHERE id=NEW.id; END;''')
         # A crash after launching a host may have enqueued the prompt. Never replay it.
         self.db.execute("UPDATE deliveries SET state='uncertain', reason='dispatcher restarted during send' WHERE state='sending'")
         self.db.commit()

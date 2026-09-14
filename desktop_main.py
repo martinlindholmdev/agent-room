@@ -161,7 +161,12 @@ def main():
     elif args.tool:
         if not args.binding:
             parser.error('--binding required')
-        result = local_call(args.home, 'tool', {'binding': args.binding, 'name': args.tool, 'args': json.load(sys.stdin)})
+        bindings=local_call(args.home,'snapshot',{})['bindings']
+        binding=next((b for b in bindings if b['id']==args.binding),None)
+        native=os.environ.get('CODEX_THREAD_ID')
+        if not binding or binding['app']!='codex-queue' or native!=binding['native']:
+            parser.error('this tool fallback requires the exact Codex task identity supplied by its host; other agents use their native bridge')
+        result = local_call(args.home, 'tool', {'binding': args.binding, 'native':native,'generation':binding['generation'],'name': args.tool, 'args': json.load(sys.stdin)})
         print(json.dumps(result, ensure_ascii=False))
     else:
         serve(args.home, args.port, args.hub_port)
