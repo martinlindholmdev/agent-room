@@ -14,6 +14,14 @@ runs without an end-user Python/Node installation. Local ad-hoc signatures pass
 `codesign --verify --deep --strict`. The final DMG passes `hdiutil verify`.
 No Developer ID/notarization or signed automatic release endpoint is configured.
 
+The installed behavior is from `da866fa`, including the verified receipt fix and
+reconnect-warning fix. The final `a186c2a` package adds corrected onboarding text
+and bundled OpenCode setup files. The Mac locked before its final replacement
+and visible check, so those last packaging/onboarding additions are not claimed
+installed. Installed and packaged helper executables have the same SHA-256
+`83c293452de9039520a2727289c35a62bf76a3fcd62b6c3173885210d68e098b`.
+The final installer is ready; unlocking is required for the last native UI check.
+
 Closing the window left the helper online. Start at login was enabled in the
 native Settings page; the LaunchAgent points to the installed app with
 `--background`. A real logout/login was not performed. The app supervises its
