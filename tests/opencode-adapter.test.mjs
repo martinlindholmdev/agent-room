@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {submitExisting,incoming} from '../adapters/opencode-client.mjs';
+import {submitExisting,incoming} from '../adapters/agent-room-desktop/opencode-client.mjs';
 test('existing exact native ID and directory; HTTP 204 only submits',async()=>{
   let request;
   const client={session:{promptAsync:async(data)=>{request=data;return {response:{status:204}};}}};

@@ -3,7 +3,41 @@
   "productName": "Agent Room",
   "version": "0.1.0",
   "identifier": "app.agentroom.desktop",
-  "build": {"frontendDist":"../dist","devUrl":"http://127.0.0.1:1420"},
-  "app": {"windows":[{"title":"Agent Room","width":1240,"height":820,"minWidth":760,"minHeight":560,"titleBarStyle":"Overlay","hiddenTitle":true}],"security":{"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'"}},
-  "bundle": {"active":true,"targets":["app","dmg"],"resources":{"binaries/agent-room-helper/":"helper/"},"icon":["icons/icon.icns"],"macOS":{"minimumSystemVersion":"12.0"}}
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:1420"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Agent Room",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 560,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'; base-uri 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "resources": {
+      "binaries/agent-room-helper/": "helper/",
+      "../../../adapters/": "adapters/"
+    },
+    "icon": [
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
 }

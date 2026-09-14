@@ -5,9 +5,11 @@ another server or conversation or exports a password. Development typecheck is
 against `@opencode-ai/plugin` 1.18.30; installed older hosts need their own live
 acceptance check. `prompt_async` HTTP 204 is **submission**, never agent receipt.
 
+The installable app includes these files at `Contents/Resources/adapters/`.
+
 1. In Agent Room, connect **OpenCode**, its exact `ses_…` ID, title and directory.
-2. At a convenient session boundary, copy `agent-room-desktop.ts` and
-   `opencode-client.mjs` together into that workspace's `.opencode/plugins/`.
+2. At a convenient session boundary, copy `agent-room-desktop.ts` and the
+   `agent-room-desktop/` support folder together into that workspace's `.opencode/plugins/`.
    OpenCode must provide `@opencode-ai/plugin` (add it to the workspace's
    `.opencode/package.json` dependencies if the host requires it).
 3. Reload the plugin using your host's supported lifecycle. Keep/resume the same

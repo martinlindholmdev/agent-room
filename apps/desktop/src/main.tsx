@@ -1494,8 +1494,8 @@ function App() {
             {editing.data.app === "codex-queue"
               ? "Delivery uses the installed Codex queue for this exact task. Replies and receipts need the separate desktop room tools below."
               : editing.data.app === "opencode-bridge"
-                ? "The provided OpenCode plugin uses the authenticated client already inside OpenCode. It never extracts the desktop password. Add this binding to the local plugin configuration and reload only when your existing session is ready."
-                : "Connect the separate agent-room-desktop MCP helper to this same native conversation. Claude channel support and its development allowlist flag are required for push delivery."}
+                ? "Copy the bundled OpenCode plugin into your OpenCode plugins folder, then restart OpenCode when its sessions are idle. The plugin finds this exact conversation automatically."
+                : "Connect the bundled MCP helper to this same native conversation. Claude channel support and its development allowlist flag are required for push delivery."}
           </p>
           <label>
             Native conversation
@@ -1505,15 +1505,21 @@ function App() {
             Desktop room binding
             <input value={editing.id} readOnly />
           </label>
-          <p className="small">
-            MCP command: the bundled agent-room-helper with{" "}
-            <code>--mcp --binding {editing.id}</code>
-            {editing.data.app === "claude-channel"
-              ? " and --claude-channel"
-              : ""}
-            . Use the separate MCP name <strong>agent-room-desktop</strong> to
-            preserve the live room.
-          </p>
+          {editing.data.app === "opencode-bridge" ? (
+            <p className="small">
+              Plugin files are inside Agent Room.app at Contents/Resources/adapters.
+              Copy agent-room-desktop.ts and the agent-room-desktop folder together
+              into ~/.config/opencode/plugins. No password or binding file is needed.
+            </p>
+          ) : (
+            <p className="small">
+              Use the bundled agent-room-helper with <code>--mcp</code>
+              {editing.data.app === "claude-channel" ? " and --claude-channel" : ""}.
+              Replace the old Agent Room MCP command. The host supplies this
+              conversation’s identity; never put a shared session ID in global
+              configuration. Reload the MCP connection when the session is ready.
+            </p>
+          )}
           <p className="small">
             A receipt means the receiving agent explicitly confirmed reading.
             “Submitted” only means its app accepted the prompt.

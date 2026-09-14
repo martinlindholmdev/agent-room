@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 // @ts-ignore JavaScript adapter deliberately has no runtime dependency.
-import { submitExisting, incoming } from "./opencode-client.mjs";
+import { submitExisting, incoming } from "./agent-room-desktop/opencode-client.mjs";
 
 type Binding = { id: string; native: string; app: string; directory?: string };
 
