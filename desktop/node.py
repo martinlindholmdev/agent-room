@@ -398,7 +398,13 @@ class Node(Database):
             ids = args.get('delivery_ids', [])
             if args.get('read_through') is not None:
                 rows = self.rows('SELECT * FROM offered WHERE binding=?', (identity,))
-                require(rows and 0 <= args['read_through'] <= rows[0]['seq'], 'receipt exceeds offered complete page')
+                # Hosts may fill optional numeric tool fields with zero. Zero
+                # advances no cursor and requires no offered read page; pushed
+                # delivery IDs still pass the exact-recipient check below.
+                cursor = args['read_through']
+                require(isinstance(cursor, int) and cursor >= 0 and
+                        (cursor == 0 or (rows and cursor <= rows[0]['seq'])),
+                        'receipt exceeds offered complete page')
             result = self.delivery.ack(identity, room, ids)
             if args.get('read_through') is not None:
                 with self.lock, self.db:

@@ -248,6 +248,27 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(2,len([e for e in self.node.snapshot()['events'] if e['kind']=='message']))
         self.assertIsNone(self.node.bridge_next(binding['id'],second['lease'],0)['delivery'])
 
+    def test_pushed_ack_accepts_zero_optional_cursor_without_offered_page(self):
+        binding = self.bind('opencode-bridge')
+        message = self.node.enqueue('message', {'text': 'Complete push', 'targets': [binding['id']]})
+        self.node.sync_once()
+        opened = self.node.bridge_open(binding['id'], binding['native'], binding['app'])
+        with self.node.delivery.db:
+            self.node.delivery.db.execute('UPDATE deliveries SET updated=0')
+        row = self.node.bridge_next(binding['id'], opened['lease'], 0)['delivery']
+        request = {'binding': binding['id'], 'native': binding['native'],
+                   'generation': opened['generation'], 'lease': opened['lease'],
+                   'name': 'room_ack', 'args': {'delivery_ids': [row['id']], 'read_through': 0}}
+        self.node.control('tool', request)
+        self.assertEqual('acknowledged', self.node.delivery.status('general', message['id'])[0]['state'])
+        self.assertEqual([], self.node.rows('SELECT * FROM offered'))
+        request['args'] = {'delivery_ids': ['not-this-delivery'], 'read_through': 0}
+        with self.assertRaises(ValueError):
+            self.node.control('tool', request)
+        request['args'] = {'delivery_ids': [row['id']], 'read_through': 1}
+        with self.assertRaises(ValueError):
+            self.node.control('tool', request)
+
     def test_bridge_reconnect_recovers_only_definitely_unsent_work(self):
         binding=self.bind('opencode-bridge')
         self.node.enqueue('message',{'text':'Waiting for the same session','targets':[binding['id']]})

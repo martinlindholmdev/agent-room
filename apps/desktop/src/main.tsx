@@ -162,6 +162,7 @@ function App() {
   const [s, setS] = useState<Snapshot>(empty),
     [loaded, setLoaded] = useState(false),
     [error, setError] = useState(""),
+    [connectionError, setConnectionError] = useState(""),
     [view, setView] = useState("room"),
     [context, setContext] = useState(true),
     [query, setQuery] = useState(""),
@@ -185,9 +186,10 @@ function App() {
     try {
       const next = await api("snapshot");
       setS({ ...empty, ...next });
+      setConnectionError("");
       setLoaded(true);
     } catch (e) {
-      setError(String(e));
+      setConnectionError(String(e));
       setLoaded(true);
     }
   };
@@ -402,13 +404,16 @@ function App() {
             </button>
           </div>
         </header>
-        {error && (
+        {(error || connectionError) && (
           <div className="error-banner" role="alert">
-            <span>{error}</span>
+            <span>{error || connectionError}</span>
             <button
               className="icon"
               aria-label="Dismiss error"
-              onClick={() => setError("")}
+              onClick={() => {
+                setError("");
+                setConnectionError("");
+              }}
             >
               <X size={15} />
             </button>
