@@ -38,7 +38,7 @@ class Delivery:
     def register(self, session, channel, agent, adapter='pull', target=''):
         if not session or len(session) > 128:
             raise ValueError('session identity required')
-        if adapter not in ('pull', 'codex-queue', 'claude-channel'):
+        if adapter not in ('pull', 'codex-queue', 'claude-channel', 'opencode-bridge'):
             raise ValueError('unsupported delivery adapter')
         if adapter == 'codex-queue':
             if str(uuid.UUID(target)) != target:
@@ -62,12 +62,12 @@ class Delivery:
 
     def heartbeat(self, session, channel):
         with self.lock, self.db:
-            self.db.execute("UPDATE sessions SET seen=? WHERE id=? AND channel=? AND adapter='claude-channel' AND active=1", (time.time(), session, channel))
+            self.db.execute("UPDATE sessions SET seen=? WHERE id=? AND channel=? AND adapter IN ('claude-channel','opencode-bridge') AND active=1", (time.time(), session, channel))
 
     def expire_channels(self):
         with self.lock, self.db:
             self.db.execute("UPDATE deliveries SET state='uncertain', reason='send did not complete; no automatic retry' WHERE state='sending' AND updated<?", (time.time()-30,))
-            rows = self.db.execute("SELECT id,channel FROM sessions WHERE active=1 AND adapter='claude-channel' AND seen<?", (time.time()-30,)).fetchall()
+            rows = self.db.execute("SELECT id,channel FROM sessions WHERE active=1 AND adapter IN ('claude-channel','opencode-bridge') AND seen<?", (time.time()-30,)).fetchall()
             for row in rows:
                 self.close(row['id'], row['channel'])
 
@@ -129,10 +129,12 @@ class Delivery:
                 self.db.execute("UPDATE deliveries SET state='acknowledged',reason='',updated=? WHERE id=?", (time.time(), delivery_id))
         return {'acknowledged': ids}
 
-    def claim(self, session=None, channel=None, adapter=None):
+    def claim(self, session=None, channel=None, adapter=None, skip_sessions=()):
         with self.lock, self.db:
             rows = self.db.execute("SELECT d.*,s.adapter,s.target FROM deliveries d JOIN sessions s ON d.session=s.id AND d.channel=s.channel WHERE d.state='pending' AND s.active=1 ORDER BY d.human DESC, d.updated").fetchall()
             for row in rows:
+                if row['session'] in skip_sessions:
+                    continue
                 if channel and row['channel'] != channel:
                     continue
                 if adapter and row['adapter'] != adapter:
@@ -170,9 +172,9 @@ def codex_command():
     return configured or shutil.which('codex') or '/Applications/ChatGPT.app/Contents/Resources/codex'
 
 
-def dispatch_one(delivery, read_message):
+def dispatch_one(delivery, read_message, render_prompt=prompt, skip_sessions=()):
     delivery.expire_channels()
-    row = delivery.claim()
+    row = delivery.claim(skip_sessions=skip_sessions)
     if not row:
         return False
     msg = read_message(row['channel'], row['message'])
@@ -180,7 +182,7 @@ def dispatch_one(delivery, read_message):
         delivery.finish(row['id'], 'unavailable', 'source message unavailable')
         return True
     try:
-        result = subprocess.run([codex_command(), 'queue', '--thread', row['target'], '--message', prompt(row, msg)],
+        result = subprocess.run([codex_command(), 'queue', '--thread', row['target'], '--message', render_prompt(row, msg)],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
     except OSError:
         # Process never launched: safe bounded retry. No text/credentials in error log.
