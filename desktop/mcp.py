@@ -37,18 +37,20 @@ def incoming(row, message, claude_channel=False):
     return instructions+'\n'+json.dumps(message, ensure_ascii=False)
 
 
-def resolve_binding(bindings, identity=None, claude_channel=False):
-    native=os.environ.get('CLAUDE_CODE_SESSION_ID' if claude_channel else 'CODEX_THREAD_ID')
-    app='claude-channel' if claude_channel else 'codex-queue'
+def resolve_binding(bindings, identity=None, claude_channel=False, claude_app=False):
+    if claude_channel and claude_app:
+        raise SystemExit('Select either Claude channel push or Claude app read-on-demand.')
+    native=os.environ.get('CLAUDE_CODE_SESSION_ID' if claude_channel or claude_app else 'CODEX_THREAD_ID')
+    app='claude-channel' if claude_channel else 'pull' if claude_app else 'codex-queue'
     matches=[b for b in bindings if native and b['native']==native and b['app']==app and (not identity or b['id']==identity)]
     if len(matches)!=1:
         raise SystemExit('Connect this exact host session in Agent Room first. Host identity must be supplied by the app; never set a shared session ID in MCP configuration.')
     return matches[0]
 
 
-def run(root, identity, claude_channel=False):
+def run(root, identity, claude_channel=False, claude_app=False):
     snapshot=local_call(root,'snapshot',{})
-    binding=resolve_binding(snapshot['bindings'],identity,claude_channel)
+    binding=resolve_binding(snapshot['bindings'],identity,claude_channel,claude_app)
     identity,native=binding['id'],binding['native']
     generation=binding['generation']
     lease={}
@@ -96,7 +98,9 @@ def run(root, identity, claude_channel=False):
                     capabilities['experimental'] = {'claude/channel': {}}
                 result = {'protocolVersion': request.get('params', {}).get('protocolVersion', '2025-06-18'), 'capabilities': capabilities,
                           'serverInfo': {'name': 'agent-room-desktop', 'version': '0.1.0'},
-                          'instructions': 'You are bound to exact desktop session '+identity+'. Only explicit room_ack acknowledges fully read content. Native delivery and work completion are separate.'}
+                          'instructions': 'You are bound to exact desktop session '+identity+'. '+
+                          ('Claude app read-on-demand: call room_read to check for messages during a turn; this MCP server cannot wake an idle app session. ' if claude_app else '')+
+                          'Only explicit room_ack acknowledges fully read content. Native delivery and work completion are separate.'}
             elif method == 'tools/list':
                 result = {'tools': [{'name': name, 'description': description, 'inputSchema': {'type': 'object', 'properties': properties}} for name, description, properties in TOOLS]}
             elif method == 'tools/call':

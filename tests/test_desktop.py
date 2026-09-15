@@ -310,6 +310,37 @@ class NodeTests(unittest.TestCase):
         self.node.tool(first['id'],'room_ack',{'read_through':page['read_through']})
         self.assertNotEqual(page['messages'][0]['id'],self.node.tool(first['id'],'room_read',{})['messages'][0]['id'])
 
+    def test_claude_app_pull_requires_exact_identity_offered_page_and_receiver_ack(self):
+        binding=self.bind('pull')
+        other=self.bind('pull')
+        messages=[self.node.enqueue('message',{'text':str(i)*25000,'targets':[binding['id']]}) for i in range(2)]
+        self.node.sync_once()
+        self.assertTrue(all(row['state']=='unavailable' for row in self.node.delivery.status('general')))
+        request={'binding':binding['id'],'native':binding['native'],'generation':binding['generation'],
+                 'name':'room_read','args':{}}
+        page=self.node.control('tool',request)
+        self.assertEqual([messages[0]['id']],[event['id'] for event in page['messages']])
+        self.assertEqual(2,len(page['deliveries']))
+        self.assertTrue(all(row['state']=='unavailable' for row in self.node.delivery.status('general')))
+        with self.assertRaises(ValueError):
+            self.node.control('tool',dict(request,native=other['native']))
+        with self.assertRaises(ValueError):
+            self.node.control('tool',dict(request,generation=binding['generation']+1))
+        ack=dict(request,name='room_ack',args={'delivery_ids':[page['deliveries'][0]['id']], 'read_through':page['read_through']})
+        with self.assertRaises(ValueError):
+            self.node.control('tool',dict(ack,binding=other['id'],native=other['native']))
+        with self.assertRaises(ValueError):
+            self.node.control('tool',dict(ack,args={'read_through':page['read_through']+1}))
+        with self.assertRaises(ValueError):
+            self.node.control('tool',dict(ack,args={'delivery_ids':[page['deliveries'][1]['id']]}))
+        self.node.control('tool',ack)
+        self.assertEqual('acknowledged',self.node.delivery.status('general',messages[0]['id'])[0]['state'])
+        self.assertEqual('unavailable',self.node.delivery.status('general',messages[1]['id'])[0]['state'])
+        self.assertEqual(messages[1]['id'],self.node.control('tool',request)['messages'][0]['id'])
+        renewed=dict(binding,generation=binding['generation']+1)
+        self.node.save_binding(renewed)
+        with self.assertRaises(ValueError):self.node.control('tool',request)
+
     def test_real_http_protocol_scope_pair_two_synthetic_devices(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.node,'not-used',True))
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()

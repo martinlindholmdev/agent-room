@@ -139,6 +139,7 @@ def main():
     parser.add_argument('--mcp', action='store_true')
     parser.add_argument('--binding')
     parser.add_argument('--claude-channel', action='store_true')
+    parser.add_argument('--claude-app', action='store_true')
     parser.add_argument('--restore-from', type=Path)
     parser.add_argument('--stage-legacy', type=Path)
     parser.add_argument('--destination', type=Path)
@@ -150,8 +151,10 @@ def main():
         result=restore(args.restore_from,args.destination) if args.restore_from else stage_legacy(args.stage_legacy,args.destination)
         print(json.dumps(result))
     elif args.mcp:
+        if args.claude_channel and args.claude_app:
+            parser.error('select either --claude-channel or --claude-app')
         from desktop.mcp import run
-        run(args.home, args.binding, args.claude_channel)
+        run(args.home, args.binding, args.claude_channel, args.claude_app)
     elif args.tool:
         if not args.binding:
             parser.error('--binding required')

@@ -104,17 +104,19 @@ const appName = (app: string) =>
     "claude-channel": "Claude Code",
     pull: "Read on demand",
   })[app] || app;
-const receiptName = (state: string) =>
-  ({
-    waiting: "Waiting for device",
-    pending: "Waiting for agent app",
-    submitted: "Submitted to agent app",
-    acknowledged: "Agent acknowledged",
-    unavailable: "Needs connection",
-    uncertain: "Send uncertain",
-    saved: "Saved on this Mac",
-    failed: "Needs attention",
-  })[state] || state;
+const receiptName = (state: string, target?: Session) =>
+  state === "unavailable" && target?.app === "pull"
+    ? "Read on demand · awaiting agent"
+    : ({
+        waiting: "Waiting for device",
+        pending: "Waiting for agent app",
+        submitted: "Submitted to agent app",
+        acknowledged: "Agent acknowledged",
+        unavailable: "Needs connection",
+        uncertain: "Send uncertain",
+        saved: "Saved on this Mac",
+        failed: "Needs attention",
+      })[state] || state;
 async function api(action: string, data: Record<string, unknown> = {}) {
   const result = isTauri()
     ? await invoke<any>("control", { action, data })
@@ -712,7 +714,7 @@ function App() {
                     >
                       <Circle size={18} />
                       <div>
-                        <strong>{receiptName(r.state)}</strong>
+                        <strong>{receiptName(r.state, session(r.target))}</strong>
                         <p>{r.reason}</p>
                         <small>{session(r.target)?.title}</small>
                       </div>
@@ -980,7 +982,7 @@ function App() {
                                     ) : (
                                       <Circle size={9} />
                                     )}{" "}
-                                    {receiptName(r.state)}
+                                    {receiptName(r.state, session(r.target))}
                                   </span>
                                 ))}
                               </div>
@@ -1453,7 +1455,7 @@ function App() {
                 <option value="codex-queue">Codex</option>
                 <option value="opencode-bridge">OpenCode</option>
                 <option value="claude-channel">Claude Code</option>
-                <option value="pull">Read on demand</option>
+                <option value="pull">Claude app · read on demand</option>
               </select>
             </label>
             <label>
@@ -1483,7 +1485,8 @@ function App() {
             </label>
             <p className="small">
               Codex can receive on its next turn. OpenCode needs the local
-              plugin. Claude Code needs its supported channel connection.
+              plugin. Claude app sessions can read messages using ordinary MCP
+              tools during a turn; channel push needs separate host support.
               Registration alone doesn’t prove receipt.
             </p>
             <button className="primary wide" disabled={busy}>
@@ -1506,7 +1509,9 @@ function App() {
               ? "Delivery uses the installed Codex queue for this exact task. Replies and receipts need the separate desktop room tools below."
               : editing.data.app === "opencode-bridge"
                 ? "Copy the bundled OpenCode plugin into your OpenCode plugins folder, then restart OpenCode when its sessions are idle. The plugin finds this exact conversation automatically."
-                : "Connect the bundled MCP helper to this same native conversation. Claude Code channels require host support and a launch opt-in. Custom channels in research preview require the development allowlist flag; check whether this Desktop host can supply it."}
+                : editing.data.app === "pull"
+                  ? "Claude app read-on-demand uses ordinary MCP tools in this existing conversation. It cannot wake the conversation while idle; an agent must read and explicitly acknowledge during a turn."
+                  : "Connect the bundled MCP helper to this same native conversation. Claude Code channels require host support and a launch opt-in. Custom channels in research preview require the development allowlist flag; check whether this Desktop host can supply it."}
           </p>
           <label>
             Native conversation
@@ -1525,7 +1530,11 @@ function App() {
           ) : (
             <p className="small">
               Use the bundled agent-room-helper with <code>--mcp</code>
-              {editing.data.app === "claude-channel" ? " and --claude-channel" : ""}.
+              {editing.data.app === "claude-channel"
+                ? " and --claude-channel"
+                : editing.data.app === "pull"
+                  ? " and --claude-app"
+                  : ""}.
               Replace the old Agent Room MCP command. The host supplies this
               conversation’s identity; never put a shared session ID in global
               configuration. Reload the MCP connection when the session is ready.

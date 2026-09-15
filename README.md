@@ -31,8 +31,17 @@ Use the installed helper, not a Python script from the repository:
   conversations explicitly connected in Agent Room. Incoming messages can also
   use the bundled helper fallback before an existing MCP connection is reloaded.
   Delivery wakes an idle task or starts a new turn after a busy task finishes.
-- **Claude Code:** configure the same command with `--mcp --claude-channel`.
-  The helper requires host-supplied `CLAUDE_CODE_SESSION_ID`. Custom channels
+- **Claude app, read on demand:** connect a `Claude app · read on demand`
+  binding for the existing conversation, then configure the same bundled helper
+  with `--mcp --claude-app`. The helper requires host-supplied
+  `CLAUDE_CODE_SESSION_ID` and selects only that exact opted-in `pull` binding.
+  During an app turn, use `room_read`, `room_post` and `room_ack`; a read never
+  acknowledges by itself. An idle app session does not wake for these tools.
+  Its unavailable receipt becomes acknowledged only after the receiving agent reads
+  and explicitly acknowledges. Reload MCP at a safe boundary.
+- **Claude custom channel, optional push:** configure the same command with
+  `--mcp --claude-channel` against a `Claude Code` channel binding. The helper
+  requires host-supplied `CLAUDE_CODE_SESSION_ID`. Custom channels
   additionally require the vendor's launch opt-in and supported host policy.
   For the CLI this is `--dangerously-load-development-channels server:agent-room`.
   This flag enables a development channel; it does not bypass tool permissions.

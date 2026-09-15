@@ -397,6 +397,16 @@ class Node(Database):
             return {'messages': result, 'read_through': through, 'deliveries': self.delivery.inbox(identity, room), 'note': 'Read does not acknowledge. Acknowledge only complete messages you read.'}
         if name == 'room_ack':
             ids = args.get('delivery_ids', [])
+            if binding['app'] == 'pull' and ids:
+                # The inbox may list IDs beyond the bounded room_read page.
+                # A pull recipient may only confirm messages offered in a
+                # complete page to this same binding.
+                offered = self.rows('SELECT seq FROM offered WHERE binding=?', (identity,))
+                require(offered, 'read a complete page before acknowledging')
+                for delivery_id in ids:
+                    delivery = next((r for r in self.delivery.status(room) if r['id'] == delivery_id and r['session'] == identity), None)
+                    event = self.rows('SELECT seq FROM cache WHERE id=?', (delivery['message'],)) if delivery else []
+                    require(event and event[0]['seq'] <= offered[0]['seq'], 'receipt message was not offered in a complete page')
             if args.get('read_through') is not None:
                 rows = self.rows('SELECT * FROM offered WHERE binding=?', (identity,))
                 # Hosts may fill optional numeric tool fields with zero. Zero
