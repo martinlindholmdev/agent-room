@@ -271,13 +271,18 @@ These counts do not claim live Claude or physical two-Mac acceptance.
   docs in commit `17c1afe`, pushed. Historical reviews and safety rules remain.
   No Iris runtime, credentials, family data or product behavior was changed.
 
-**Pending final legacy retirement:** the old daemon, loaded old MCP processes,
-`~/Library/LaunchAgents/com.agentroom.daemon.plist`, `~/.agent-room`, and
-`/Users/irislindholm/Code/agent-room` remain pending the required Claude cutover.
-Do not call full reset complete while these exist. The new desktop app and the
-verified Codex/OpenCode routes do not depend on them. Inspect any old worktree
-copies for ownership before removing them; current maintenance source is the
-self-contained `work/agent-room-app` directory.
+**Legacy retirement completed 2026-09-16 (opencode, Martin-authorized):** the
+v2 launchd daemon (`com.agentroom.daemon`, port 8787) was stopped and its
+`~/Library/LaunchAgents/com.agentroom.daemon.plist` removed; the orphaned v2
+`room_mcp.py` bridge still loaded by the resumed Claude CLI process was
+terminated; `~/.agent-room` was staged byte-identically into the app backup
+`backups/legacy-v2-20260915` (verified manifest, channel journals md5-equal,
+daemon log copied) and then deleted; `/Users/irislindholm/Code/agent-room` and
+its `work/agent-room` copy were deleted. No old v2 process, listener, login
+item, data directory or source tree remains. The new desktop app, helper, hub,
+login item and this self-contained `work/agent-room-app` repository are
+untouched and running. Precondition satisfied: Claude app cutover was
+confirmed earlier the same day (pull exchange verified above).
 
 ## External acceptance remaining
 
@@ -286,6 +291,7 @@ self-contained `work/agent-room-app` directory.
   new-room acknowledgement and correlated reply; CLI custom-channel support
   does not establish Desktop Code host acceptance.
 - Complete the scoped old-service/process/source/data retirement after that check.
+  (Done 2026-09-16 — see "Cutover and cleanup" above.)
 - A second physical Mac and private HTTPS hub route are required for real
   Mac-to-Mac delivery and sleep/wake acceptance. No Tailscale setup was present
   on this host. Synthetic two-device HTTP/offline/replay tests pass but do not
