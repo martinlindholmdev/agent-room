@@ -545,7 +545,8 @@ main {
   color: var(--muted);
 }
 .receipt.uncertain,
-.receipt.unavailable {
+.receipt.unavailable,
+.receipt.stuck {
   color: var(--text);
   text-decoration: underline dotted;
 }
@@ -602,6 +603,21 @@ main {
   font-size: 10px;
   max-width: 90%;
   padding: 0;
+}
+.target-health {
+  font-size: 9px;
+  padding-left: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.target-health.warn {
+  color: var(--muted);
+}
+.target-health.down {
+  color: var(--text);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
 }
 .composer textarea {
   display: block;

@@ -104,6 +104,40 @@ const appName = (app: string) =>
     "claude-channel": "Claude Code",
     pull: "Read on demand",
   })[app] || app;
+type DeliveryHealth = "good" | "warn" | "down";
+const targetHealth = (
+  target: string,
+  sessions: Session[],
+  bindings: Session[],
+  selfDevice: string,
+): { health: DeliveryHealth; note: string } => {
+  if (!target) return { health: "good", note: "" };
+  const session = sessions.find((p) => p.id === target);
+  const binding = bindings.find((b) => b.id === target);
+  if (!session)
+    return { health: "down", note: "Session is not active in this room" };
+  if (session.device !== selfDevice)
+    return {
+      health: "warn",
+      note: "On another Mac · delivery depends on that device being online",
+    };
+  if (session.app === "pull")
+    return {
+      health: "warn",
+      note: "Read on demand · the agent reads when it is active",
+    };
+  if (session.app === "codex-queue")
+    return {
+      health: "good",
+      note: "Wakes an idle task · arrives next turn if busy",
+    };
+  if (!binding || !binding.bridge_connected)
+    return {
+      health: "down",
+      note: "Bridge not connected · message will be queued until it reconnects",
+    };
+  return { health: "good", note: "Bridge active · routed to this conversation" };
+};
 const receiptName = (state: string, target?: Session) =>
   state === "unavailable" && target?.app === "pull"
     ? "Read on demand · awaiting agent"
@@ -259,6 +293,17 @@ function App() {
       o.kind === "work" &&
       o.data.state !== "resolved" &&
       o.data.state !== "cancelled",
+  );
+  const unacknowledged = s.events.filter(
+    (e) =>
+      e.kind === "message" &&
+      !e.sender &&
+      e.body.targets?.length &&
+      s.receipts.some(
+        (r) =>
+          r.message === e.id &&
+          ["waiting", "pending", "submitted"].includes(r.state),
+      ),
   );
   const messages = s.events.filter(
     (e) =>
@@ -691,36 +736,79 @@ function App() {
                 <h3>
                   Needs you{" "}
                   <span className="count">
-                    {s.receipts.filter((r) =>
-                      ["unavailable", "uncertain"].includes(r.state),
-                    ).length +
-                      s.outbox.filter((o) => o.state === "failed").length}
+                    {s.receipts.filter((r) => {
+                      const target = session(r.target);
+                      const binding = s.bindings.find(
+                        (b) => b.id === r.target,
+                      );
+                      return (
+                        ["unavailable", "uncertain"].includes(r.state) ||
+                        (r.state === "pending" &&
+                          target &&
+                          target.device === s.device &&
+                          !["pull", "codex-queue"].includes(target.app) &&
+                          !(binding?.bridge_connected ?? false))
+                      );
+                    }).length + s.outbox.filter((o) => o.state === "failed").length}
                   </span>
                 </h3>
                 {s.receipts
-                  .filter((r) => ["unavailable", "uncertain"].includes(r.state))
-                  .map((r) => (
-                    <button
-                      className="inbox-item"
-                      key={r.message + r.target}
-                      onClick={() => {
-                        setView("room");
-                        setQuery(
-                          s.events
-                            .find((e) => e.id === r.message)
-                            ?.body.text?.slice(0, 40) || "",
-                        );
-                      }}
-                    >
-                      <Circle size={18} />
-                      <div>
-                        <strong>{receiptName(r.state, session(r.target))}</strong>
-                        <p>{r.reason}</p>
-                        <small>{session(r.target)?.title}</small>
-                      </div>
-                      <ArrowUpRight size={17} />
-                    </button>
-                  ))}
+                  .filter((r) => {
+                    const target = session(r.target);
+                    const binding = s.bindings.find(
+                      (b) => b.id === r.target,
+                    );
+                    return (
+                      ["unavailable", "uncertain"].includes(r.state) ||
+                      (r.state === "pending" &&
+                        target &&
+                        target.device === s.device &&
+                        !["pull", "codex-queue"].includes(target.app) &&
+                        !(binding?.bridge_connected ?? false))
+                    );
+                  })
+                  .map((r) => {
+                    const target = session(r.target);
+                    const binding = s.bindings.find(
+                      (b) => b.id === r.target,
+                    );
+                    const stuck =
+                      r.state === "pending" &&
+                      target &&
+                      target.device === s.device &&
+                      !["pull", "codex-queue"].includes(target.app) &&
+                      !(binding?.bridge_connected ?? false);
+                    return (
+                      <button
+                        className="inbox-item"
+                        key={r.message + r.target}
+                        onClick={() => {
+                          setView("room");
+                          setQuery(
+                            s.events
+                              .find((e) => e.id === r.message)
+                              ?.body.text?.slice(0, 40) || "",
+                          );
+                        }}
+                      >
+                        <Circle size={18} />
+                        <div>
+                          <strong>
+                            {stuck
+                              ? "Queued · bridge not connected"
+                              : receiptName(r.state, target)}
+                          </strong>
+                          <p>
+                            {stuck
+                              ? "Reconnect or resume the exact session to deliver this message"
+                              : r.reason}
+                          </p>
+                          <small>{target?.title}</small>
+                        </div>
+                        <ArrowUpRight size={17} />
+                      </button>
+                    );
+                  })}
                 {s.outbox
                   .filter((o) => o.state === "failed")
                   .map((o) => (
@@ -733,9 +821,18 @@ function App() {
                       </div>
                     </div>
                   ))}
-                {!s.receipts.some((r) =>
-                  ["unavailable", "uncertain"].includes(r.state),
-                ) &&
+                {!s.receipts.some((r) => {
+                  const target = session(r.target);
+                  const binding = s.bindings.find((b) => b.id === r.target);
+                  return (
+                    ["unavailable", "uncertain"].includes(r.state) ||
+                    (r.state === "pending" &&
+                      target &&
+                      target.device === s.device &&
+                      !["pull", "codex-queue"].includes(target.app) &&
+                      !(binding?.bridge_connected ?? false))
+                  );
+                }) &&
                   !s.outbox.some((o) => o.state === "failed") && (
                     <div className="quiet-empty">
                       <Check size={17} />
@@ -744,8 +841,53 @@ function App() {
                   )}
                 <h3>
                   Waiting on agents{" "}
-                  <span className="count">{waiting.length}</span>
+                  <span className="count">
+                    {waiting.length + unacknowledged.length}
+                  </span>
                 </h3>
+                {unacknowledged.map((e) => {
+                  const outstanding = s.receipts.filter(
+                    (r) =>
+                      r.message === e.id &&
+                      ["waiting", "pending", "submitted"].includes(r.state),
+                  );
+                  return (
+                    <button
+                      className="inbox-item"
+                      key={"unacked-" + e.id}
+                      onClick={() => {
+                        setView("room");
+                        setQuery("");
+                        setTimeout(
+                          () =>
+                            document
+                              .getElementById("message-" + e.id)
+                              ?.scrollIntoView({ block: "center" }),
+                          30,
+                        );
+                      }}
+                    >
+                      <Circle size={18} />
+                      <div>
+                        <strong>
+                          {outstanding.length > 1
+                            ? `Awaiting ${outstanding.length} agents`
+                            : receiptName(
+                                outstanding[0].state,
+                                session(outstanding[0].target),
+                              )}
+                        </strong>
+                        <p>{e.body.text?.slice(0, 90)}</p>
+                        <small>
+                          {outstanding
+                            .map((r) => session(r.target)?.title)
+                            .join(", ")}
+                        </small>
+                      </div>
+                      <ArrowUpRight size={17} />
+                    </button>
+                  );
+                })}
                 {waiting.map((o) => (
                   <button
                     className="inbox-item"
@@ -765,7 +907,7 @@ function App() {
                     <ChevronRight size={16} />
                   </button>
                 ))}
-                {!waiting.length && (
+                {!waiting.length && !unacknowledged.length && (
                   <div className="quiet-empty">
                     Your next work request will appear here.
                   </div>
@@ -969,22 +1111,45 @@ function App() {
                                 ) : (
                                   <span>Room board</span>
                                 )}
-                                {receipts.map((r) => (
-                                  <span
-                                    title={r.reason}
-                                    className={"receipt " + r.state}
-                                    key={r.target}
-                                  >
-                                    {r.state === "acknowledged" ? (
-                                      <CheckCheck size={12} />
-                                    ) : r.state === "submitted" ? (
-                                      <Check size={12} />
-                                    ) : (
-                                      <Circle size={9} />
-                                    )}{" "}
-                                    {receiptName(r.state, session(r.target))}
-                                  </span>
-                                ))}
+                                {receipts.map((r) => {
+                                  const target = session(r.target);
+                                  const binding = s.bindings.find(
+                                    (b) => b.id === r.target,
+                                  );
+                                  const stuck =
+                                    r.state === "pending" &&
+                                    target &&
+                                    target.device === s.device &&
+                                    !["pull", "codex-queue"].includes(
+                                      target.app,
+                                    ) &&
+                                    !(binding?.bridge_connected ?? false);
+                                  return (
+                                    <span
+                                      title={
+                                        stuck
+                                          ? "Bridge not connected · message queued until reconnect"
+                                          : r.reason
+                                      }
+                                      className={
+                                        "receipt " +
+                                        (stuck ? "stuck" : r.state)
+                                      }
+                                      key={r.target}
+                                    >
+                                      {r.state === "acknowledged" ? (
+                                        <CheckCheck size={12} />
+                                      ) : r.state === "submitted" ? (
+                                        <Check size={12} />
+                                      ) : (
+                                        <Circle size={9} />
+                                      )}{" "}
+                                      {stuck
+                                        ? "Queued · bridge not connected"
+                                        : receiptName(r.state, target)}
+                                    </span>
+                                  );
+                                })}
                               </div>
                             </div>
                           </article>
@@ -1065,6 +1230,29 @@ function App() {
                         ))}
                       </select>
                       <ChevronDown size={12} />
+                      {targetHealth(target, s.sessions, s.bindings, s.device)
+                        .health !== "good" && (
+                        <span
+                          className={
+                            "target-health " +
+                            targetHealth(
+                              target,
+                              s.sessions,
+                              s.bindings,
+                              s.device,
+                            ).health
+                          }
+                        >
+                          {
+                            targetHealth(
+                              target,
+                              s.sessions,
+                              s.bindings,
+                              s.device,
+                            ).note
+                          }
+                        </span>
+                      )}
                     </div>
                     <textarea
                       ref={composer}
