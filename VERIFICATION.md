@@ -1,5 +1,31 @@
 # Desktop acceptance — 2026-09-15
 
+## Installed candidate continuation at 07:20 Stockholm time
+
+Code candidate `ef39a9aeecf74f1587cbbb645063d54e9fa70fff` is now built,
+ad-hoc signed and installed. The native executable, frozen helper and bundled
+OpenCode plugin/support hashes match the packaged bundle; DMG integrity passes.
+50 Python tests, four JavaScript adapter tests, frontend build and a separate
+OpenCode SDK-compatible TypeScript adapter check pass. A consistent backup was
+verified and restored to a fresh disposable destination. All 35 pre-install
+event IDs survived the complete app Quit/replacement/reopen without duplicates;
+seven historical receipts remained acknowledged. Actual UI inspection covered
+history, exact composer targets, context, Settings, final Claude prerequisite
+and bundled plugin instructions. Window-close background delivery and the
+installed-app login plist were checked. A real login and sleep/wake were not run.
+
+A candidate Codex test message `4970803b-db3b-494a-b1d8-819cd6aa7f63` was
+submitted to exact native task `01a0a031-04e2-70c3-9e59-7416bba3097b`;
+there was no receiver acknowledgement or correlated reply at last check.
+OpenCode's new bundled adapter was not reloaded globally because another
+preserved tab was actively handling user work. Claude's existing native
+conversation is provider-blocked, and Desktop custom-channel launch support
+remains unproven. Two physical Macs and conditional legacy retirement remain
+outstanding. Implementation is complete; full acceptance is incomplete.
+
+The following sections preserve the earlier installed behavior and its real
+receipt/reply evidence. They are historical relative to candidate `ef39a9a`.
+
 Source: continuation on the local M1, macOS 26.5.2, arm64. Commands ran
 unconfined under the available execution policy. Native app interactions used
 computer-use tools. Real acceptance below used the existing conversations;
@@ -14,13 +40,13 @@ runs without an end-user Python/Node installation. Local ad-hoc signatures pass
 `codesign --verify --deep --strict`. The final DMG passes `hdiutil verify`.
 No Developer ID/notarization or signed automatic release endpoint is configured.
 
-The installed behavior is from `da866fa`, including the verified receipt fix and
+The earlier installed behavior was from `da866fa`, including the verified receipt fix and
 reconnect-warning fix. The final `a186c2a` package adds corrected onboarding text
 and bundled OpenCode setup files. The Mac locked before its final replacement
-and visible check, so those last packaging/onboarding additions are not claimed
-installed. Installed and packaged helper executables have the same SHA-256
+and visible check in the earlier run, so those last packaging/onboarding additions were not claimed
+installed then. Installed and packaged helper executables had the same SHA-256
 `83c293452de9039520a2727289c35a62bf76a3fcd62b6c3173885210d68e098b`.
-The final installer is ready; unlocking is required for the last native UI check.
+The final installer was ready then; candidate `ef39a9a` has since received its native UI check.
 
 Closing the window left the helper online. Start at login was enabled in the
 native Settings page; the LaunchAgent points to the installed app with
@@ -74,19 +100,23 @@ This proves workflow transport/provenance with two real agents, not review of th
 app's code or a substitute for the blocked independent security re-review.
 Automated tests separately verify that artifact changes invalidate old approval.
 
-## Claude blocker: three distinct facts
+## Claude chronology: tool rejection and later provider block
 
 1. Claude initially requested direct user confirmation because the setup notice
    came from Codex. Martin supplied that confirmation directly in the existing
    conversation. That authorization request is resolved.
-2. Claude's following tool step was marked **Blocked**. It attempted to list the
+2. At 00:27, Claude's following tool step was marked **Blocked**. It attempted to list the
    app's Contents/helper directory and find README files. The tool returned:
    “The user doesn't want to proceed with this tool use” and instructed Claude
    to stop and wait for the user. This was not labelled a cybersecurity rejection.
    The continuation did not rerun that operation elsewhere or send a bypass prompt.
-   Claude needs the user's direct follow-up on that rejected step; its calendar
-   review was preserved.
-3. The separate earlier Agent Room security re-review stopped after a service
+   Claude responded normally at 00:30. Its calendar conversation was preserved.
+3. At 00:39, after a different calendar-fix request, the same native conversation
+   showed a separate Anthropic provider-blocked-session error with request ID
+   `req_011Cf48oF3ppNZdvB7kKUhMA` and label `[bio]`. The cause is unknown.
+   No further Agent Room prompt was sent into it and no replacement session was
+   started to evade the block.
+4. The separate earlier Agent Room security re-review stopped after a service
    flag for possible cybersecurity risk. There is no final independent security
    approval. This is separate from Claude's connection/tool rejection above.
 
@@ -142,8 +172,10 @@ self-contained `work/agent-room-app` directory.
 
 ## External acceptance remaining
 
-- Resolve Claude's rejected step, reload the supported connection in the same
-  conversation, and require a real new-room acknowledgement and correlated reply.
+- Preserve Claude's rejected step and later provider block separately. Once a
+  user-selected supported connection is actually usable, require a real
+  new-room acknowledgement and correlated reply; CLI custom-channel support
+  does not establish Desktop Code host acceptance.
 - Complete the scoped old-service/process/source/data retirement after that check.
 - A second physical Mac and private HTTPS hub route are required for real
   Mac-to-Mac delivery and sleep/wake acceptance. No Tailscale setup was present
