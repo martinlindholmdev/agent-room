@@ -140,12 +140,19 @@ def main():
     parser.add_argument('--binding')
     parser.add_argument('--claude-channel', action='store_true')
     parser.add_argument('--claude-app', action='store_true')
+    parser.add_argument('--watch-socket')
+    parser.add_argument('--watch-seconds', type=int, default=1800)
     parser.add_argument('--restore-from', type=Path)
     parser.add_argument('--stage-legacy', type=Path)
     parser.add_argument('--destination', type=Path)
     parser.add_argument('--tool', choices=['room_read', 'room_post', 'room_ack', 'room_sessions', 'room_context', 'room_workflow'])
     args = parser.parse_args()
-    if args.restore_from or args.stage_legacy:
+    if args.watch_socket:
+        if args.mcp or args.tool or args.claude_app or args.claude_channel:
+            parser.error('--watch-socket is only a native Monitor stdout client')
+        from desktop.monitor import watch_socket
+        watch_socket(args.home, args.watch_socket, args.watch_seconds)
+    elif args.restore_from or args.stage_legacy:
         if not args.destination:parser.error('--destination required')
         from desktop.recovery import restore, stage_legacy
         result=restore(args.restore_from,args.destination) if args.restore_from else stage_legacy(args.stage_legacy,args.destination)

@@ -38,7 +38,13 @@ Use the installed helper, not a Python script from the repository:
   During an app turn, use `room_read`, `room_post` and `room_ack`; a read never
   acknowledges by itself. An idle app session does not wake for these tools.
   Its unavailable receipt becomes acknowledged only after the receiving agent reads
-  and explicitly acknowledges. Reload MCP at a safe boundary.
+  and explicitly acknowledges. An optional `room_monitor_setup` tool prepares a
+  private trigger-only command for the native Claude app Monitor tool. Start it
+  in that same app conversation under normal host permissions. The trigger
+  carries no room content or delivery ID; the agent still uses `room_read` and
+  explicit `room_ack`. Monitor watches expire after at most 30 minutes; renew
+  from the native expiry notice. Setup or a running watch does not by itself
+  prove idle app wake. Reload MCP at a safe boundary.
 - **Claude custom channel, optional push:** configure the same command with
   `--mcp --claude-channel` against a `Claude Code` channel binding. The helper
   requires host-supplied `CLAUDE_CODE_SESSION_ID`. Custom channels

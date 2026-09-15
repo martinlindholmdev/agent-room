@@ -483,6 +483,20 @@ class Node(Database):
             return {'alive': True}
         if action == 'bridge-sent':
             return self.bridge_sent(data['binding'], data['lease'], data['delivery_id'], data['state'])
+        if action == 'watch-next':
+            binding = self.binding(data['binding'])
+            require(binding['app'] == 'pull' and data.get('native') == binding['native'] and
+                    data.get('generation') == binding['generation'],
+                    'watch requires exact active pull identity and generation')
+            if not self.online or self.get('paused', False) or binding.get('paused', False):
+                return {'oldest': 0, 'latest': 0}
+            oldest, latest = 0, 0
+            for delivery in self.delivery.inbox(binding['id'], binding['room']):
+                event = self.rows('SELECT seq FROM cache WHERE id=?', (delivery['message'],))
+                if event:
+                    oldest = min(oldest or event[0]['seq'], event[0]['seq'])
+                    latest = max(latest, event[0]['seq'])
+            return {'oldest': oldest, 'latest': latest}
         if action == 'tool':
             binding=self.binding(data['binding'])
             require(data.get('native')==binding['native'] and data.get('generation')==binding['generation'], 'native identity or connector generation changed')

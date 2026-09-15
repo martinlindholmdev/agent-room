@@ -61,9 +61,49 @@ class HostIdentityTests(unittest.TestCase):
         self.assertEqual(['snapshot','tool'],[action for action,_ in calls])
         self.assertEqual([1,2,3],[reply['id'] for reply in replies])
         self.assertNotIn('experimental',replies[0]['result']['capabilities'])
-        self.assertIn('cannot wake an idle app session',replies[0]['result']['instructions'])
+        self.assertIn('Setup alone cannot prove idle wake',replies[0]['result']['instructions'])
         self.assertIn('room_ack',[tool['name'] for tool in replies[1]['result']['tools']])
+        self.assertIn('room_monitor_setup',[tool['name'] for tool in replies[1]['result']['tools']])
         self.assertEqual({'messages':[], 'read_through':0},json.loads(replies[2]['result']['content'][0]['text']))
+
+    def test_claude_monitor_setup_status_and_renewal_keep_exact_mcp_identity(self):
+        binding=dict(self.bindings[-1], generation=7)
+        calls=[]
+        feeds=[]
+        def local(_root,action,data):
+            calls.append((action,data))
+            if action=='snapshot':return {'bindings':[binding]}
+            if action=='watch-next':
+                self.assertEqual({'binding':'d','native':'claude-c','generation':7},data)
+                return {'oldest':0,'latest':0}
+            self.fail('Monitor setup used other local action: '+action)
+        class FakeFeed:
+            def __init__(self,root,identity,native,generation,fetch):
+                self.assertion=(root,identity,native,generation)
+                self.closed=False
+                feeds.append(self)
+            def start(self,duration):
+                if duration!=60:raise AssertionError('wrong native Monitor deadline')
+                return {'command':'synthetic helper','timeout_ms':60000}
+            def status(self):return {'connected':True,'seconds_remaining':60}
+            def close(self):self.closed=True
+        requests=[json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{}})+'\n',
+                  json.dumps({'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'room_monitor_setup','arguments':{'duration_seconds':60}}})+'\n',
+                  json.dumps({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'room_monitor_status','arguments':{}}})+'\n',
+                  json.dumps({'jsonrpc':'2.0','id':4,'method':'tools/call','params':{'name':'room_monitor_setup','arguments':{'duration_seconds':60}}})+'\n']
+        with patch.dict(os.environ,{'CLAUDE_CODE_SESSION_ID':'claude-c'},clear=True), \
+             patch('desktop.mcp.local_call',side_effect=local), \
+             patch('desktop.monitor.MonitorFeed',FakeFeed), \
+             patch('desktop.mcp.sys.stdin',requests), \
+             patch('desktop.mcp.sys.stdout',new_callable=io.StringIO) as output:
+            run('synthetic-root',None,claude_app=True)
+        replies=[json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([1,2,3,4],[reply['id'] for reply in replies])
+        self.assertEqual(['snapshot','watch-next','watch-next','watch-next'],[action for action,_ in calls])
+        self.assertEqual(2,len(feeds))
+        self.assertTrue(all(feed.assertion==('synthetic-root','d','claude-c',7) and feed.closed for feed in feeds))
+        self.assertTrue(json.loads(replies[2]['result']['content'][0]['text'])['connected'])
+        self.assertEqual(60000,json.loads(replies[3]['result']['content'][0]['text'])['timeout_ms'])
 
     def test_host_specific_incoming_instructions(self):
         delivery={'id':'delivery-1','session':'binding-1'}

@@ -21,6 +21,13 @@ TOOLS = [
     ('room_workflow', 'Create/update a versioned plan, work request, decision, review or advisory claim. Current version + 1 required. Review revisions invalidate approval.',
      {'id': {'type': 'string'}, 'type': {'type': 'string', 'enum': ['plan', 'work', 'decision', 'review', 'claim']}, 'version': {'type': 'integer'}, 'data': {'type': 'object'}}),
 ]
+MONITOR_TOOL = ('room_monitor_setup',
+    'Prepare a private trigger-only feed for the native Claude app Monitor tool. '
+    'Start the returned command with Monitor in this same app conversation under normal host permissions. '
+    'Deadline 60 to 1800 seconds; renew after Monitor expiry notice. This never reads or acknowledges.',
+    {'duration_seconds': {'type': 'integer', 'minimum': 60, 'maximum': 1800}})
+MONITOR_STATUS = ('room_monitor_status',
+    'Check whether this MCP connection has a private Monitor socket consumer. Transport status only; not proof of app wake, reading or receipt.', {})
 
 
 def incoming(row, message, claude_channel=False):
@@ -54,6 +61,7 @@ def run(root, identity, claude_channel=False, claude_app=False):
     identity,native=binding['id'],binding['native']
     generation=binding['generation']
     lease={}
+    monitor_feed = None
     write_lock = threading.Lock()
     stopped = threading.Event()
     def send(value):
@@ -99,13 +107,36 @@ def run(root, identity, claude_channel=False, claude_app=False):
                 result = {'protocolVersion': request.get('params', {}).get('protocolVersion', '2025-06-18'), 'capabilities': capabilities,
                           'serverInfo': {'name': 'agent-room-desktop', 'version': '0.1.0'},
                           'instructions': 'You are bound to exact desktop session '+identity+'. '+
-                          ('Claude app read-on-demand: call room_read to check for messages during a turn; this MCP server cannot wake an idle app session. ' if claude_app else '')+
+                          ('Claude app: call room_read to check messages during a turn. Optional room_monitor_setup prepares a private trigger command for the native app Monitor tool; start it under normal host permissions in this same conversation and renew after its deadline notice. Setup alone cannot prove idle wake. ' if claude_app else '')+
                           'Only explicit room_ack acknowledges fully read content. Native delivery and work completion are separate.'}
             elif method == 'tools/list':
-                result = {'tools': [{'name': name, 'description': description, 'inputSchema': {'type': 'object', 'properties': properties}} for name, description, properties in TOOLS]}
+                exposed = TOOLS + ([MONITOR_TOOL, MONITOR_STATUS] if claude_app else [])
+                result = {'tools': [{'name': name, 'description': description, 'inputSchema': {'type': 'object', 'properties': properties}} for name, description, properties in exposed]}
             elif method == 'tools/call':
                 params = request['params']
-                result = {'content': [{'type': 'text', 'text': json.dumps(call(params['name'], params.get('arguments', {})), ensure_ascii=False)}]}
+                if claude_app and params['name'] == 'room_monitor_setup':
+                    from desktop.monitor import MonitorFeed
+                    duration = params.get('arguments', {}).get('duration_seconds', 1800)
+                    if type(duration) is not int or not 60 <= duration <= 1800:
+                        raise ValueError('Monitor duration must be 60 to 1800 seconds')
+                    # Reject a stale connector before replacing a working feed.
+                    local_call(root, 'watch-next',
+                        {'binding': identity, 'native': native, 'generation': generation})
+                    if monitor_feed is not None:
+                        monitor_feed.close()  # Renewal fences the previous native Monitor feed.
+                    monitor_feed = MonitorFeed(root, identity, native, generation,
+                        lambda: local_call(root, 'watch-next',
+                            {'binding': identity, 'native': native, 'generation': generation}))
+                    value = monitor_feed.start(duration)
+                elif claude_app and params['name'] == 'room_monitor_status':
+                    local_call(root, 'watch-next',
+                        {'binding': identity, 'native': native, 'generation': generation})
+                    value = monitor_feed.status() if monitor_feed is not None else {
+                        'connected': False, 'seconds_remaining': 0,
+                        'note': 'No native Monitor socket is connected in this MCP process; this is not receiver receipt.'}
+                else:
+                    value = call(params['name'], params.get('arguments', {}))
+                result = {'content': [{'type': 'text', 'text': json.dumps(value, ensure_ascii=False)}]}
             elif method == 'ping':
                 result = {}
             else:
@@ -116,3 +147,5 @@ def run(root, identity, claude_channel=False, claude_app=False):
             if isinstance(locals().get('request'), dict) and request.get('id') is not None:
                 send({'jsonrpc': '2.0', 'id': request['id'], 'result': {'isError': True, 'content': [{'type': 'text', 'text': 'Desktop room operation failed. Open Agent Room to check connection and exact binding.'}]}})
     stopped.set()
+    if monitor_feed is not None:
+        monitor_feed.close()

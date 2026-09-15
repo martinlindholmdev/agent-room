@@ -341,6 +341,43 @@ class NodeTests(unittest.TestCase):
         self.node.save_binding(renewed)
         with self.assertRaises(ValueError):self.node.control('tool',request)
 
+    def test_claude_monitor_trigger_keeps_pull_receipt_and_generation_scoped(self):
+        pull = self.bind('pull')
+        channel = self.bind('claude-channel')
+        watcher = {'binding': pull['id'], 'native': pull['native'], 'generation': pull['generation']}
+        self.assertEqual({'oldest': 0, 'latest': 0}, self.node.control('watch-next', watcher))
+        message = self.node.enqueue('message', {'text': 'A' * 25000, 'targets': [pull['id']]})
+        second = self.node.enqueue('message', {'text': 'B' * 25000, 'targets': [pull['id']]})
+        self.node.sync_once()
+        status = self.node.control('watch-next', watcher)
+        latest = status['latest']
+        self.assertGreater(latest, 0)
+        self.assertLess(status['oldest'], latest)
+        self.assertEqual('unavailable', self.node.delivery.status('general', message['id'])[0]['state'])
+        page = self.node.control('tool', dict(watcher, name='room_read', args={}))
+        self.assertEqual([message['id']], [row['id'] for row in page['messages']])
+        self.assertEqual(latest, self.node.control('watch-next', watcher)['latest'])
+        for changed in (dict(watcher, native=channel['native']),
+                        dict(watcher, generation=pull['generation'] + 1),
+                        {'binding': channel['id'], 'native': channel['native'], 'generation': channel['generation']}):
+            with self.assertRaises(ValueError):self.node.control('watch-next', changed)
+        self.node.control('tool', dict(watcher, name='room_ack',
+                           args={'delivery_ids': [self.node.delivery.status('general', message['id'])[0]['id']],
+                                 'read_through': page['read_through']}))
+        remaining = self.node.control('watch-next', watcher)
+        self.assertEqual(latest, remaining['oldest'])
+        self.assertEqual(latest, remaining['latest'])
+        next_page = self.node.control('tool', dict(watcher, name='room_read', args={}))
+        self.assertEqual([second['id']], [row['id'] for row in next_page['messages']])
+        self.node.control('tool', dict(watcher, name='room_ack',
+                           args={'delivery_ids': [self.node.delivery.status('general', second['id'])[0]['id']],
+                                 'read_through': next_page['read_through']}))
+        self.assertEqual({'oldest': 0, 'latest': 0}, self.node.control('watch-next', watcher))
+        self.assertEqual('acknowledged', self.node.delivery.status('general', message['id'])[0]['state'])
+        newer = dict(pull, generation=pull['generation'] + 1)
+        self.node.save_binding(newer)
+        with self.assertRaises(ValueError):self.node.control('watch-next', watcher)
+
     def test_real_http_protocol_scope_pair_two_synthetic_devices(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.node,'not-used',True))
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()

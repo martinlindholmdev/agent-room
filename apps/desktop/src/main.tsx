@@ -1510,7 +1510,7 @@ function App() {
               : editing.data.app === "opencode-bridge"
                 ? "Copy the bundled OpenCode plugin into your OpenCode plugins folder, then restart OpenCode when its sessions are idle. The plugin finds this exact conversation automatically."
                 : editing.data.app === "pull"
-                  ? "Claude app read-on-demand uses ordinary MCP tools in this existing conversation. It cannot wake the conversation while idle; an agent must read and explicitly acknowledge during a turn."
+                  ? "Claude app read-on-demand uses ordinary MCP tools in this existing conversation. For optional background watch, the agent can call room_monitor_setup and start its returned command with the native app Monitor tool under normal host permissions. Each watch expires after at most 30 minutes and must be renewed; real idle delivery needs a receiving read and acknowledgement."
                   : "Connect the bundled MCP helper to this same native conversation. Claude Code channels require host support and a launch opt-in. Custom channels in research preview require the development allowlist flag; check whether this Desktop host can supply it."}
           </p>
           <label>
