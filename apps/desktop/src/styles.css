@@ -784,6 +784,69 @@ main {
   font-size: 10px;
   line-height: 1.8;
 }
+.objects-page {
+  padding: 34px 42px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.objects-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 14px;
+}
+.object-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  text-align: left;
+  padding: 17px 18px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--subtle);
+}
+.object-card:hover {
+  background: var(--hover);
+}
+.object-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+}
+.object-card-head strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.object-card ol {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.object-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.object-card small {
+  color: var(--soft);
+  font-size: 10px;
+}
+.object-state {
+  font-size: 9px;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.object-state.ok {
+  color: var(--text);
+}
 .onboarding {
   max-width: 690px;
   padding: 90px 65px 50px;

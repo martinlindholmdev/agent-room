@@ -195,6 +195,7 @@ function Palette({
   const actions: PaletteAction[] = [
     { id: "goto-room", label: "Go to room", hint: "Conversation", group: "Navigate" },
     { id: "goto-inbox", label: "Go to inbox", hint: "Needs you and waiting items", group: "Navigate" },
+    { id: "goto-objects", label: "Go to plans & work", hint: "Plans, requests, reviews, decisions", group: "Navigate" },
     { id: "goto-settings", label: "Settings · connections and device", group: "Navigate" },
     { id: "new-message", label: "Message the room…", hint: "Focus composer", group: "Compose" },
     { id: "new-work", label: "New work request", group: "Compose" },
@@ -503,6 +504,16 @@ function App() {
           )}
         </button>
         <button
+          className={"nav " + (view === "objects" ? "selected" : "")}
+          onClick={() => setView("objects")}
+        >
+          <Users size={17} />
+          Plans & work
+          {(waiting.length > 0 || s.objects.length > 0) && (
+            <span className="count">{s.objects.length}</span>
+          )}
+        </button>
+        <button
           className="nav"
           onClick={() => {
             setPalette(true);
@@ -555,7 +566,9 @@ function App() {
                 ? "General"
                 : view === "inbox"
                   ? "Inbox"
-                  : "Settings"}
+                  : view === "objects"
+                    ? "Plans & work"
+                    : "Settings"}
             </strong>
           </div>
           <div className="header-actions">
@@ -868,6 +881,176 @@ function App() {
                     </details>
                   )}
                 </section>
+              </div>
+            ) : view === "objects" ? (
+              <div className="objects-page">
+                <div className="eyebrow">PLANS & WORK</div>
+                <h1>Shared planning</h1>
+                <p className="lead">
+                  Plans, work requests, reviews and decisions for this room.
+                </p>
+                <div className="objects-actions">
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setEditing(null);
+                      setDialog("workflow:plan");
+                    }}
+                  >
+                    <Plus size={15} />
+                    Plan
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setEditing(null);
+                      setDialog("workflow:work");
+                    }}
+                  >
+                    <Plus size={15} />
+                    Work request
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setEditing(null);
+                      setDialog("workflow:review");
+                    }}
+                  >
+                    <Plus size={15} />
+                    Review
+                  </button>
+                  <button
+                    className="secondary"
+                    onClick={() => {
+                      setEditing({
+                        id: crypto.randomUUID(),
+                        kind: "decision",
+                        version: 0,
+                        author: "",
+                        data: {},
+                      });
+                      setDialog("workflow:decision");
+                    }}
+                  >
+                    <Plus size={15} />
+                    Decision
+                  </button>
+                </div>
+                {!s.objects.length && (
+                  <div className="quiet-empty">
+                    <Check size={17} />
+                    No plans or work requests yet. Create one above, or use ⌘K.
+                  </div>
+                )}
+                {s.objects
+                  .filter((o) => o.kind === "plan")
+                  .map((o) => (
+                    <button
+                      className="object-card"
+                      key={o.id}
+                      onClick={() => {
+                        setEditing(o);
+                        setDialog("workflow:plan");
+                      }}
+                    >
+                      <div className="object-card-head">
+                        <strong>{o.data.objective}</strong>
+                        <span className="count">v{o.version}</span>
+                      </div>
+                      <ol>
+                        {(o.data.steps || []).map((step: string, i: number) => (
+                          <li key={i}>{step}</li>
+                        ))}
+                      </ol>
+                    </button>
+                  ))}
+                {s.objects
+                  .filter((o) => o.kind === "work")
+                  .map((o) => (
+                    <button
+                      className={"object-card state-" + (o.data.state || "proposed")}
+                      key={o.id}
+                      onClick={() => {
+                        setEditing(o);
+                        setDialog("workflow:work");
+                      }}
+                    >
+                      <div className="object-card-head">
+                        <strong>{o.data.title}</strong>
+                        <span className="object-state">
+                          {o.data.state || "proposed"}
+                        </span>
+                      </div>
+                      {o.data.scope && <p>{o.data.scope}</p>}
+                      <small>
+                        {o.data.owner
+                          ? "Owner: " +
+                            (session(o.data.owner)?.title || "exact session")
+                          : "Unassigned"}
+                        {o.data.evidence ? " · evidence: " + o.data.evidence : ""}
+                      </small>
+                    </button>
+                  ))}
+                {s.objects
+                  .filter((o) => o.kind === "review")
+                  .map((o) => (
+                    <button
+                      className="object-card"
+                      key={o.id}
+                      onClick={() => {
+                        setEditing(o);
+                        setDialog("workflow:review");
+                      }}
+                    >
+                      <div className="object-card-head">
+                        <strong>{o.data.artifact}</strong>
+                        <span
+                          className={
+                            "object-state " +
+                            (o.data.verdict === "approved" ? "ok" : "")
+                          }
+                        >
+                          {o.data.verdict || "pending"}
+                        </span>
+                      </div>
+                      <small>
+                        Revision {o.data.revision}
+                        {o.data.base ? " · base " + o.data.base : ""}
+                        {o.data.reviewer
+                          ? " · reviewer: " +
+                            (session(o.data.reviewer)?.title || "exact session")
+                          : ""}
+                      </small>
+                      {o.data.checks && <p>{o.data.checks}</p>}
+                    </button>
+                  ))}
+                {s.objects
+                  .filter((o) => o.kind === "decision")
+                  .map((o) => (
+                    <button
+                      className="object-card"
+                      key={o.id}
+                      onClick={() => {
+                        setEditing(o);
+                        setDialog("workflow:decision");
+                      }}
+                    >
+                      <div className="object-card-head">
+                        <strong>{o.data.text}</strong>
+                        <span className="object-state">{o.data.state}</span>
+                      </div>
+                      <small>
+                        {o.data.accepted_by
+                          ? "Accepted by " +
+                            (session(o.data.accepted_by)?.title ||
+                              s.devices.find((d) => d.id === o.data.accepted_by)
+                                ?.name ||
+                              o.data.accepted_by)
+                          : "Proposed for discussion"}
+                      </small>
+                    </button>
+                  ))}
               </div>
             ) : view === "inbox" ? (
               <div className="inbox-page">
@@ -1909,6 +2092,8 @@ function App() {
               setQuery("");
             } else if (a.id === "goto-inbox") {
               setView("inbox");
+            } else if (a.id === "goto-objects") {
+              setView("objects");
             } else if (a.id === "goto-settings") {
               setView("settings");
             } else if (a.id === "new-message") {
