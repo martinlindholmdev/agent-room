@@ -1,5 +1,62 @@
 # Desktop acceptance — 2026-09-15
 
+## Installed candidate update at 07:39 CEST
+
+Implementation remains code commit `ef39a9aeecf74f1587cbbb645063d54e9fa70fff`;
+the installed and packaged candidate were unchanged. The installed native executable,
+helper, and bundled adapters still match the package by SHA-256; bundle signature
+and DMG integrity were rechecked. This update supersedes the pending live-client
+and helper-recovery statuses at 07:20 below. The earlier records remain historical.
+
+The original candidate Codex message `4970803b-db3b-494a-b1d8-819cd6aa7f63`
+received an explicit acknowledgement at 07:32:09 and correlated reply
+`75202965-ca73-4a16-83d9-4d94f30fc056` at 07:32:16 from its exact existing
+native task `01a0a031-04e2-70c3-9e59-7416bba3097b`. The earlier `submitted`
+state was only native queue acceptance; no duplicate was sent.
+
+At an idle boundary, the bundled OpenCode plugin and its support module were
+installed globally together (SHA-256 `da5166890d3a065a7b9bbe065a9d5cbd604a299daa0f9981cf4131f9a7d35cc3`
+and `f4abea0b6669ea5d508e5385c390fae619df466a5ed2f0445aa6818d0162774a`),
+then OpenCode used its normal Restart action at 07:34. All 75 persisted sessions
+remained; one tab was visible before restart, and its blank draft remained blank.
+The exact existing target `ses_f5e779100ffe8bGhqh3r7Lrs1D` was reopened
+from the session list with directory `/Users/irislindholm/Code`. The new
+installed-candidate message `89cdc2c6-8eb6-4f6a-a094-24e5cd4c158c` was
+acknowledged by OpenCode and correlated reply `609e507c-7ff7-44ec-bd88-8475851a6d82`
+was addressed only to Codex. Codex acknowledged that reply and sent correlated
+message `0a3a5699-6fdf-4732-a098-4a718f70faa3` only to OpenCode; OpenCode
+acknowledged it and posted terminal board reply `3907abdf-b3e2-4fb5-9140-3c2e1130b8c1`.
+All three routed deliveries reached receiver-created `acknowledged` revision 3.
+The independent Astra acceptance check confirmed the exact intended OpenCode
+native session and routing exclusivity. The previously reviewed six-file code
+patch is unchanged; the earlier service-blocked comprehensive security review
+remains incomplete.
+
+A forced crash of the installed helper recovered in 15.769 seconds at 07:37:32.
+The same 53 event IDs and 11 acknowledged receipts remained with no duplicate
+event ID; connector generations advanced from 8 to 9, and the OpenCode bridge
+reconnected. A new post-recovery message `45e7f87a-72af-4bae-99ce-650b1c838efb`
+was acknowledged at 07:38:44, followed by matching board reply
+`0b3fd8cd-e99e-4743-88f4-aba658ae87d3` at 07:38:52. The room then had 58
+events, 12 acknowledgements, and an empty outbox.
+
+At 07:40, a supported consistent backup was verified and restored into a
+fresh disposable destination; the live profile was not overwritten. All 35
+pre-install event IDs remain among 58 unique current events, with 12
+acknowledged receipts and an empty outbox.
+
+Full acceptance is still incomplete. The preserved Claude native conversation
+remains provider-blocked. Claude Desktop's documented CLI-equivalent launch
+table does not include the custom-channel opt-in, so Desktop channel delivery
+is not established; no message or workaround was sent into the blocked session.
+The user identified this always-on M1 as the hub. Delivery depends on that Mac
+being awake and signed in; the app's configured login item starts after sign-in,
+so a reboot still requires signing in before room delivery resumes. Physical
+logout/login and sleep/wake checks were deferred by the user. A second physical
+Mac, access to it, and an approved private HTTPS route are still needed for the
+hardware checks. Conditional retirement of the 206-record legacy profile and
+five old loaded MCP clients remains pending Claude cutover.
+
 ## Installed candidate continuation at 07:20 Stockholm time
 
 Code candidate `ef39a9aeecf74f1587cbbb645063d54e9fa70fff` is now built,
