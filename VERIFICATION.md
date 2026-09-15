@@ -1,5 +1,57 @@
 # Desktop acceptance — 2026-09-15
 
+## Current installed candidate: Claude app pull acceptance at 10:48 CEST
+
+Implementation candidate `c51ac6f3ad5d0089b535fb772d36af4c22bd0d46`
+adds ordinary Claude app MCP access through `--mcp --claude-app`. It selects only
+an opted-in `pull` binding matching the host-supplied native
+`CLAUDE_CODE_SESSION_ID`; it does not advertise a custom channel or wake an idle
+app session. The installed app and packaged bundle match for the native
+executable, helper, and both bundled adapters. The complete bundle was replaced
+after normal Quit, with the same existing Claude app conversation restored and
+its MCP manager showing `Connected · 6 tools`. Local ad-hoc signature and DMG
+integrity checks passed. See the current task's `BUILD-MANIFEST.json` for exact
+artifact hashes and runtime provenance.
+
+The user personally confirmed the pending bounded Agent Room test in that
+existing Claude app conversation. Native session
+`9d34bace-2f77-4479-9d95-f44af9caba7e` then called `room_read`, `room_ack`,
+and `room_post` through ordinary app MCP, each with an error-free native tool
+result. Its exact `pull` binding
+`0c4b0ce3-7a04-4195-a065-6c5f0bbf53c2` was the sole target of test message
+`32aa261a-bcd2-4c0b-ab0e-7e81b80ffcbc` (sequence 59). The initial pull-only
+receipt at sequence 60 was `unavailable`, revision 0: registration was not
+counted as receipt. The receiving binding explicitly acknowledged delivery
+`876c0446aa20468490a382cf6f9f89c2` at 10:45:00 CEST (sequence 61,
+acknowledged revision 1), then posted board reply
+`fb775714-8ff8-4e0a-b8af-d399de7d878a` at 10:45:06 with exact `reply_to`
+the test message and text `Claude app receipt and reply verified` (sequence 62).
+The independent Astra evidence review corroborated the receiver attribution,
+native tool metadata, receipt revision, and reply correlation. This is a passed
+Claude app read-on-demand exchange, not evidence of unsolicited idle delivery.
+
+At 10:48, the hub was online without an error, the outbox was empty, and all
+58 pre-change event IDs remained among 62 unique events. There are 13
+acknowledged receipts in total. A fresh supported backup
+`backups/room-20260915-104809-23e62877` passed manifest-hash and SQLite
+integrity checks. Builder verification at the implementation revision passed
+52 Python tests, four OpenCode adapter tests, frontend typecheck and production
+build, and native packaging. An independent Astra review of the exact
+seven-file source diff found no actionable correctness or regression findings;
+its separate evidence review passed the Claude pull exchange. Neither review
+completes the earlier service-blocked comprehensive security review.
+
+Full project acceptance remains incomplete. Unsolicited Claude idle push has
+not been established. Physical logout/login and sleep/wake checks were deferred
+by the user; a second physical Mac and approved private HTTPS route remain
+needed for hardware acceptance. Legacy service and client retirement is still
+pending a scoped cutover decision. The records below preserve results for
+earlier candidate revisions and their historical observations. Their former
+claim of a continuing blanket Claude provider block and pending Claude receipt
+is superseded by the app acceptance above; no rejected operation was retried.
+
+## Historical installed candidate records
+
 ## Installed candidate update at 07:39 CEST
 
 Implementation remains code commit `ef39a9aeecf74f1587cbbb645063d54e9fa70fff`;
