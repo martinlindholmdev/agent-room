@@ -335,9 +335,10 @@ class Node(Database):
             thread.start()
             self.threads.append(thread)
 
-    def bridge_open(self, identity, native, app):
+    def bridge_open(self, identity, native, app, expected_generation=None):
         binding = self.binding(identity)
         require(binding['native'] == native and binding['app'] == app and app in ('opencode-bridge', 'claude-channel'), 'native bridge identity mismatch')
+        require(expected_generation is None or binding['generation'] == expected_generation, 'connector generation changed; reconnect exact native session')
         lease = secrets.token_urlsafe(32)
         self.bridge_leases[identity] = lease
         self.bridge_seen[identity] = time.monotonic()
@@ -461,7 +462,7 @@ class Node(Database):
                 require(changed, 'message already sending; cannot recall a submitted prompt')
                 return {'cancelled': data['id']}
         if action == 'bridge-open':
-            return self.bridge_open(data['binding'], data['native'], data['app'])
+            return self.bridge_open(data['binding'], data['native'], data['app'], data.get('expected_generation'))
         if action == 'bridge-next':
             return self.bridge_next(data['binding'], data['lease'], data.get('timeout', 20))
         if action == 'bridge-heartbeat':

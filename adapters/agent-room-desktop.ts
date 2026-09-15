@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 // @ts-ignore JavaScript adapter deliberately has no runtime dependency.
 import { submitExisting, incoming } from "./agent-room-desktop/opencode-client.mjs";
 
-type Binding = { id: string; native: string; app: string; directory?: string };
+type Binding = { id: string; native: string; app: string; generation: number; directory?: string };
 
 export const AgentRoomDesktop: Plugin = async ({ client, directory }) => {
   const root =
@@ -69,6 +69,7 @@ export const AgentRoomDesktop: Plugin = async ({ client, directory }) => {
         binding: binding.id,
         native: binding.native,
         app: "opencode-bridge",
+        expected_generation: binding.generation,
       });
       leases.set(binding.id, opened);
       while (!closed) {

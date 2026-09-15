@@ -248,6 +248,19 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(2,len([e for e in self.node.snapshot()['events'] if e['kind']=='message']))
         self.assertIsNone(self.node.bridge_next(binding['id'],second['lease'],0)['delivery'])
 
+    def test_old_connector_cannot_supersede_bridge_after_generation_change(self):
+        binding=self.bind('claude-channel')
+        old=self.node.bridge_open(binding['id'],binding['native'],binding['app'],binding['generation'])
+        renewed=dict(binding,generation=binding['generation']+1)
+        self.node.save_binding(renewed)
+        fresh=self.node.bridge_open(binding['id'],binding['native'],binding['app'],renewed['generation'])
+        with self.assertRaises(ValueError):
+            self.node.control('bridge-open', {'binding':binding['id'],'native':binding['native'],
+                                              'app':binding['app'],'expected_generation':binding['generation']})
+        self.assertEqual(fresh['lease'],self.node.bridge_leases[binding['id']])
+        with self.assertRaises(ValueError):self.node.bridge_next(binding['id'],old['lease'],0)
+        self.assertIsNone(self.node.bridge_next(binding['id'],fresh['lease'],0)['delivery'])
+
     def test_pushed_ack_accepts_zero_optional_cursor_without_offered_page(self):
         binding = self.bind('opencode-bridge')
         message = self.node.enqueue('message', {'text': 'Complete push', 'targets': [binding['id']]})

@@ -378,7 +378,7 @@ function App() {
               {s.paused
                 ? "Delivery paused"
                 : s.online
-                  ? "Connected"
+                  ? "Room hub connected"
                   : "Connecting"}
             </span>
             {s.configured && (
@@ -606,6 +606,15 @@ function App() {
                         <strong>{p.title}</strong>
                         <small>
                           {appName(p.app)} · {p.native}
+                        </small>
+                        <small>
+                          {p.app === "codex-queue"
+                            ? "Configured for next-turn delivery; check receipts"
+                            : p.app === "pull"
+                              ? "Configured for on-demand reading"
+                              : p.bridge_connected
+                                ? "Helper bridge active; agent receipt still required"
+                                : "Helper bridge inactive; check host setup"}
                         </small>
                       </div>
                       <button
@@ -1137,10 +1146,12 @@ function App() {
                             ? "Next-turn delivery"
                             : p.app === "pull"
                               ? "Read on demand"
+                              : p.device !== s.device
+                                ? "On another Mac · check receipts"
                               : s.bindings.find((b) => b.id === p.id)
                                     ?.bridge_connected
-                                ? "Bridge connected"
-                                : "Bridge setup needed"}
+                                ? "Helper bridge active · check receipts"
+                                : "Helper bridge inactive · check setup"}
                         </span>
                       </div>
                     </div>
@@ -1495,7 +1506,7 @@ function App() {
               ? "Delivery uses the installed Codex queue for this exact task. Replies and receipts need the separate desktop room tools below."
               : editing.data.app === "opencode-bridge"
                 ? "Copy the bundled OpenCode plugin into your OpenCode plugins folder, then restart OpenCode when its sessions are idle. The plugin finds this exact conversation automatically."
-                : "Connect the bundled MCP helper to this same native conversation. Claude channel support and its development allowlist flag are required for push delivery."}
+                : "Connect the bundled MCP helper to this same native conversation. Claude Code channels require host support and a launch opt-in. Custom channels in research preview require the development allowlist flag; check whether this Desktop host can supply it."}
           </p>
           <label>
             Native conversation
@@ -1518,6 +1529,16 @@ function App() {
               Replace the old Agent Room MCP command. The host supplies this
               conversation’s identity; never put a shared session ID in global
               configuration. Reload the MCP connection when the session is ready.
+            </p>
+          )}
+          {editing.data.app === "claude-channel" && (
+            <p className="small">
+              For the Claude Code CLI research preview, launch with <code>
+                --dangerously-load-development-channels server:agent-room
+              </code>. This opts in the custom channel only. If the Desktop Code
+              host cannot provide an equivalent launch opt-in and native session
+              identity, push delivery remains unsupported there. A loaded MCP
+              tool list or active helper process does not establish receipt.
             </p>
           )}
           <p className="small">
