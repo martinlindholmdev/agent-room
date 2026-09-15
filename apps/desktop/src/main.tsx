@@ -162,6 +162,148 @@ async function api(action: string, data: Record<string, unknown> = {}) {
   if (result.error) throw Error(result.error);
   return result;
 }
+type PaletteAction = {
+  id: string;
+  label: string;
+  hint?: string;
+  group: string;
+};
+function Palette({
+  s,
+  onClose,
+  onExecute,
+}: {
+  s: Snapshot;
+  onClose: () => void;
+  onExecute: (a: PaletteAction) => void;
+}) {
+  const [q, setQ] = useState(""),
+    [cursor, setCursor] = useState(0),
+    input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    input.current?.focus();
+  }, []);
+  useEffect(() => setCursor(0), [q]);
+  const session = (id: string) => s.sessions.find((p) => p.id === id);
+  const author = (event: Event) =>
+    event.sender
+      ? session(event.sender)?.title || "Agent conversation"
+      : s.devices.find((d) => d.id === event.device)?.name || "You";
+  const needle = q.trim().toLowerCase();
+  const matches = (...parts: string[]) =>
+    !needle || parts.join(" ").toLowerCase().includes(needle);
+  const actions: PaletteAction[] = [
+    { id: "goto-room", label: "Go to room", hint: "Conversation", group: "Navigate" },
+    { id: "goto-inbox", label: "Go to inbox", hint: "Needs you and waiting items", group: "Navigate" },
+    { id: "goto-settings", label: "Settings · connections and device", group: "Navigate" },
+    { id: "new-message", label: "Message the room…", hint: "Focus composer", group: "Compose" },
+    { id: "new-work", label: "New work request", group: "Compose" },
+    { id: "new-plan", label: "New shared plan", group: "Compose" },
+    { id: "new-review", label: "New review packet", group: "Compose" },
+    { id: "new-decision", label: "Record a decision", group: "Compose" },
+    { id: "connect", label: "Connect a conversation", group: "Compose" },
+  ];
+  s.events
+    .filter(
+      (e) => e.kind === "message" && matches(e.body.text || "", author(e)),
+    )
+    .slice(-40)
+    .reverse()
+    .forEach((e) =>
+      actions.push({
+        id: "msg-" + e.id,
+        label: (e.body.text || "").slice(0, 90),
+        hint: author(e) + " · message",
+        group: "Messages",
+      }),
+    );
+  s.sessions
+    .filter((p) => p.active && matches(p.title, appName(p.app), p.device_name))
+    .forEach((p) =>
+      actions.push({
+        id: "session-" + p.id,
+        label: p.title,
+        hint: appName(p.app) + " · " + p.device_name,
+        group: "Participants",
+      }),
+    );
+  s.objects.forEach((o) => {
+    const label =
+      o.data.title || o.data.objective || o.data.artifact || o.data.text || "";
+    if (!matches(String(label), o.kind)) return;
+    actions.push({
+      id: "object-" + o.id,
+      label: String(label).slice(0, 90),
+      hint: o.kind,
+      group: "Plans, work and reviews",
+    });
+  });
+  const flat = actions.filter((a) => matches(a.label, a.hint || "", a.group));
+  const pick = (index: number) =>
+    flat[Math.max(0, Math.min(index, flat.length - 1))];
+  const execute = (index: number) => {
+    const a = pick(index);
+    if (a) onExecute(a);
+  };
+  return (
+    <dialog open className="palette" onCancel={onClose}>
+      <div
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
+      >
+        <div className="palette-input">
+          <Search size={15} />
+          <input
+            ref={input}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search messages, participants, plans or jump…"
+            aria-label="Command palette"
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setCursor((c) => Math.min(c + 1, flat.length - 1));
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setCursor((c) => Math.max(c - 1, 0));
+              } else if (e.key === "Enter") {
+                e.preventDefault();
+                execute(cursor);
+              } else if (e.key === "Escape") {
+                onClose();
+              }
+            }}
+          />
+          <kbd>esc</kbd>
+        </div>
+        <div className="palette-list">
+          {flat.map((a, i) => {
+            const previous = i > 0 ? flat[i - 1].group : "";
+            return (
+              <React.Fragment key={a.id}>
+                {a.group !== previous && (
+                  <div className="palette-group">{a.group}</div>
+                )}
+                <button
+                  className={"palette-item " + (i === cursor ? "active" : "")}
+                  onMouseEnter={() => setCursor(i)}
+                  onClick={() => execute(i)}
+                >
+                  <span>{a.label}</span>
+                  {a.hint && <small>{a.hint}</small>}
+                </button>
+              </React.Fragment>
+            );
+          })}
+          {!flat.length && (
+            <div className="palette-empty">No matches for “{q}”.</div>
+          )}
+        </div>
+      </div>
+    </dialog>
+  );
+}
 function Dialog({
   title,
   children,
@@ -210,6 +352,7 @@ function App() {
     [pair, setPair] = useState<any>(null),
     [editing, setEditing] = useState<ObjectItem | null>(null),
     [runtime, setRuntime] = useState<any>({}),
+    [palette, setPalette] = useState(false),
     [appearance, setAppearance] = useState(
       localStorage.getItem("appearance") || "system",
     );
@@ -239,8 +382,7 @@ function App() {
     const listener = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setView("room");
-        search.current?.focus();
+        setPalette(true);
       }
       if (e.key === "Escape") {
         setQuery("");
@@ -363,8 +505,7 @@ function App() {
         <button
           className="nav"
           onClick={() => {
-            setView("room");
-            search.current?.focus();
+            setPalette(true);
           }}
         >
           <Search size={17} />
@@ -1747,13 +1888,83 @@ function App() {
           </button>
         </Dialog>
       )}
-      {dialog === "workflow" && (
+      {dialog.startsWith("workflow") && (
         <Workflow
           editing={editing}
+          kind={dialog.split(":")[1]}
           sessions={activeSessions}
           busy={busy}
           onClose={() => setDialog("")}
           onSave={(data) => act("object", data)}
+        />
+      )}
+      {palette && (
+        <Palette
+          s={s}
+          onClose={() => setPalette(false)}
+          onExecute={(a) => {
+            setPalette(false);
+            if (a.id === "goto-room") {
+              setView("room");
+              setQuery("");
+            } else if (a.id === "goto-inbox") {
+              setView("inbox");
+            } else if (a.id === "goto-settings") {
+              setView("settings");
+            } else if (a.id === "new-message") {
+              setView("room");
+              setQuery("");
+              setTimeout(() => composer.current?.focus(), 50);
+            } else if (a.id === "new-work") {
+              setView("room");
+              setEditing(null);
+              setDialog("workflow:work");
+            } else if (a.id === "new-plan") {
+              setView("room");
+              setEditing(null);
+              setDialog("workflow:plan");
+            } else if (a.id === "new-review") {
+              setView("room");
+              setEditing(null);
+              setDialog("workflow:review");
+            } else if (a.id === "new-decision") {
+              setView("room");
+              setEditing({
+                id: crypto.randomUUID(),
+                kind: "decision",
+                version: 0,
+                author: "",
+                data: {},
+              });
+              setDialog("workflow");
+            } else if (a.id === "connect") {
+              setView("room");
+              setDialog("connect");
+            } else if (a.id.startsWith("msg-")) {
+              const id = a.id.slice(4);
+              setView("room");
+              setQuery("");
+              setTimeout(
+                () =>
+                  document
+                    .getElementById("message-" + id)
+                    ?.scrollIntoView({ block: "center" }),
+                60,
+              );
+            } else if (a.id.startsWith("session-")) {
+              const id = a.id.slice(8);
+              setView("room");
+              setQuery("");
+              setTarget(id);
+              setTimeout(() => composer.current?.focus(), 50);
+            } else if (a.id.startsWith("object-")) {
+              const id = a.id.slice(7);
+              const o = s.objects.find((item) => item.id === id) || null;
+              setView("room");
+              setEditing(o);
+              setDialog("workflow");
+            }
+          }}
         />
       )}
     </div>
@@ -1761,18 +1972,20 @@ function App() {
 }
 function Workflow({
   editing,
+  kind: initialKind,
   sessions,
   busy,
   onClose,
   onSave,
 }: {
   editing: ObjectItem | null;
+  kind?: string;
   sessions: Session[];
   busy: boolean;
   onClose: () => void;
   onSave: (data: any) => Promise<any>;
 }) {
-  const [kind, setKind] = useState(editing?.kind || "work");
+  const [kind, setKind] = useState(editing?.kind || initialKind || "work");
   const d = editing?.data || {};
   return (
     <Dialog
