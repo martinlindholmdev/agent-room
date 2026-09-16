@@ -31,7 +31,7 @@ MONITOR_STATUS = ('room_monitor_status',
 CONNECT_TOOL = ('room_connect',
     'Connect or request connection for this exact session. If not yet admitted, submits a request the person approves in the Agent Room app; '
     'call again after approval to activate without reconnecting. Never guesses or reuses another session\'s identity.',
-    {'title': {'type': 'string', 'maxLength': 200}})
+    {'title': {'type': 'string', 'maxLength': 200}, 'model': {'type': 'string', 'maxLength': 100}})
 
 
 def incoming(row, message, claude_channel=False):
@@ -59,17 +59,18 @@ def resolve_binding(bindings, identity=None, claude_channel=False, claude_app=Fa
     return matches[0]
 
 
-def room_connect(root, claude_channel=False, claude_app=False, title=''):
+def room_connect(root, claude_channel=False, claude_app=False, title='', model=''):
     """Self-service admission: submit or check a connection request for this exact session."""
     native=os.environ.get('CLAUDE_CODE_SESSION_ID' if claude_channel or claude_app else 'CODEX_THREAD_ID')
     app='claude-channel' if claude_channel else 'pull' if claude_app else 'codex-queue'
     if not native:
         raise ValueError('Host did not supply this session\'s native identity; cannot request connection')
+    model = model or os.environ.get('AGENT_ROOM_MODEL', '')
     snapshot=local_call(root,'snapshot',{})
     matches=[b for b in snapshot['bindings'] if b['native']==native and b['app']==app]
     if matches:
         return {'state':'connected','binding':matches[0]['id'],'note':'This session is already connected to the room.'}
-    return local_call(root,'request-create',{'native':native,'app':app,'title':title or native,'directory':''})
+    return local_call(root,'request-create',{'native':native,'app':app,'title':title or native,'directory':'','model':model})
 
 
 def run(root, identity, claude_channel=False, claude_app=False):
@@ -186,7 +187,8 @@ def run(root, identity, claude_channel=False, claude_app=False):
                     if binding is not None:
                         value = {'state': 'connected', 'binding': identity, 'note': 'This session is now connected to the room.'}
                     else:
-                        value = room_connect(root, claude_channel, claude_app, (params.get('arguments') or {}).get('title', ''))
+                        arguments = params.get('arguments') or {}
+                        value = room_connect(root, claude_channel, claude_app, arguments.get('title', ''), arguments.get('model', ''))
                 elif claude_app and params['name'] == 'room_monitor_setup':
                     if binding is None:
                         raise ValueError('Connect this session first with room_connect.')

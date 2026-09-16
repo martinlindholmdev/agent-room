@@ -86,6 +86,9 @@ class Node(Database):
           requested REAL, state TEXT, PRIMARY KEY(native, app));
         PRAGMA user_version=1;
         ''')
+        if 'model' not in [r[1] for r in self.db.execute('PRAGMA table_info(requests)')]:
+            self.db.execute("ALTER TABLE requests ADD COLUMN model TEXT DEFAULT ''")
+            self.db.commit()
         self.db.execute("UPDATE outbox SET state='saved' WHERE state='sending'")
         self.db.commit()
         self.hub = None
@@ -172,10 +175,12 @@ class Node(Database):
         if app == 'opencode-bridge':
             require(directory and Path(directory).is_absolute() and Path(directory).is_dir(), 'OpenCode requires its exact existing local directory')
         existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        model = (data.get('model') or (existing.get('model', '') if existing else '')).strip()
         binding = self.call('bind', {'native': native, 'app': app, 'title': data['title'], 'room': self.get('room', 'general'), 'generation': existing['generation'] if existing else 1})
         if app == 'opencode-bridge':
             require(not existing or existing.get('directory') == directory, 'native workspace binding is immutable')
             binding['directory'] = directory
+        binding['model'] = model
         self.save_binding(binding)
         self.delivery.register(binding['id'], binding['room'], app, app, native if app == 'codex-queue' else '')
         self.work.set()
@@ -202,20 +207,22 @@ class Node(Database):
         require(binding is not None, 'session is not bound on this device')
         return binding
 
-    def request_create(self, native, app, title, directory=''):
+    def request_create(self, native, app, title, directory='', model=''):
         """An unbound session asks for admission. The human approves in the app."""
-        native, app, title, directory = native.strip(), app, (title or '').strip(), (directory or '').strip()
+        native, app, title, directory, model = native.strip(), app, (title or '').strip(), (directory or '').strip(), (model or '').strip()
         require(app in ('pull', 'codex-queue', 'opencode-bridge', 'claude-channel'), 'unsupported app')
         require(native and len(native) <= 128, 'native session identity required')
         require(len(title) <= 200, 'title too long')
+        require(len(model) <= 100, 'model name too long')
         if app == 'opencode-bridge':
             require(directory and Path(directory).is_absolute() and Path(directory).is_dir(), 'OpenCode requires its exact existing local directory')
         existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
         if existing:
             return {'state': 'already-connected', 'binding': existing['id']}
         with self.lock, self.db:
-            self.db.execute("INSERT INTO requests VALUES(?,?,?,?,?,'pending') ON CONFLICT(native,app) DO UPDATE SET title=excluded.title, directory=excluded.directory, requested=excluded.requested, state='pending'",
-                            (native, app, title or native, directory, time.time()))
+            self.db.execute("INSERT INTO requests(native,app,title,directory,requested,state,model) VALUES(?,?,?,?,?,'pending',?) "
+                            "ON CONFLICT(native,app) DO UPDATE SET title=excluded.title, directory=excluded.directory, requested=excluded.requested, state='pending', model=excluded.model",
+                            (native, app, title or native, directory, time.time(), model))
         self.work.set()
         return {'state': 'pending', 'note': 'Request submitted. Ask the person to approve it in the Agent Room app, then call room_connect again.'}
 
@@ -229,7 +236,7 @@ class Node(Database):
             else:
                 self.db.execute("UPDATE requests SET state='rejected' WHERE native=? AND app=?", (native, app))
         if approve:
-            binding = self.bind({'native': native, 'app': app, 'title': row['title'], 'directory': row['directory']})
+            binding = self.bind({'native': native, 'app': app, 'title': row['title'], 'directory': row['directory'], 'model': row['model']})
         return {'state': 'approved' if approve else 'rejected', 'binding': binding['id'] if binding else None}
 
     def requests(self):
@@ -494,7 +501,7 @@ class Node(Database):
         if action == 'bind':
             return self.bind(data)
         if action == 'request-create':
-            return self.request_create(data['native'], data['app'], data.get('title', ''), data.get('directory', ''))
+            return self.request_create(data['native'], data['app'], data.get('title', ''), data.get('directory', ''), data.get('model', ''))
         if action == 'request-decide':
             return self.request_decide(data['native'], data['app'], bool(data.get('approve', True)))
         if action in ('pair-create', 'pair-approve', 'revoke'):

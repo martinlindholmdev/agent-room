@@ -467,3 +467,30 @@ class RequestTests(NodeTests):
     def test_opencode_request_requires_real_directory(self):
         with self.assertRaises(ValueError):
             self.node.request_create('ses_dirless', 'opencode-bridge', 'No directory', '/nonexistent-path')
+
+    def test_request_model_round_trips_through_snapshot_and_approval(self):
+        result = self.node.request_create('ses_modeled', 'opencode-bridge', 'Modeled session', self.tmp.name, 'glm-5-3')
+        self.assertEqual('pending', result['state'])
+        snap = self.node.snapshot()
+        pending = next(r for r in snap['requests'] if r['native'] == 'ses_modeled')
+        self.assertEqual('glm-5-3', pending['model'])
+        decided = self.node.request_decide('ses_modeled', 'opencode-bridge', True)
+        self.assertEqual('approved', decided['state'])
+        snap = self.node.snapshot()
+        binding = next(b for b in snap['bindings'] if b['native'] == 'ses_modeled')
+        self.assertEqual('glm-5-3', binding['model'])
+
+    def test_request_and_binding_without_model_stay_backward_compatible(self):
+        result = self.node.request_create(uid(), 'codex-queue', 'No model synthetic task')
+        self.assertEqual('pending', result['state'])
+        snap = self.node.snapshot()
+        pending = next(r for r in snap['requests'] if r['title'] == 'No model synthetic task')
+        self.assertEqual('', pending['model'])
+        decided = self.node.request_decide(pending['native'], 'codex-queue', True)
+        self.assertEqual('approved', decided['state'])
+        snap = self.node.snapshot()
+        binding = next(b for b in snap['bindings'] if b['native'] == pending['native'])
+        self.assertEqual('', binding['model'])
+        # A binding created directly (not through the request flow) also defaults cleanly.
+        direct = self.bind('claude-channel')
+        self.assertEqual('', direct['model'])

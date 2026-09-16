@@ -140,7 +140,7 @@ export const AgentRoomDesktop: Plugin = async ({ client, directory }) => {
       );
     };
   const connect = async (
-    args: { title?: string },
+    args: { title?: string; model?: string },
     context: { sessionID: string },
   ) => {
     try {
@@ -156,6 +156,7 @@ export const AgentRoomDesktop: Plugin = async ({ client, directory }) => {
         app: "opencode-bridge",
         title: args.title || "",
         directory,
+        model: args.model || "",
       });
       return JSON.stringify(result);
     }
@@ -175,6 +176,7 @@ export const AgentRoomDesktop: Plugin = async ({ client, directory }) => {
           "Connect or request connection for this exact session to the Agent Room. If not yet admitted, submits a request the person approves in the Agent Room app; approval activates this session automatically, so call again to confirm. Include a short title describing this conversation.",
         args: {
           title: tool.schema.string().optional(),
+          model: tool.schema.string().optional(),
         },
         execute: connect,
       }),

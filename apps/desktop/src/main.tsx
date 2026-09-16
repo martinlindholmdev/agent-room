@@ -38,6 +38,7 @@ type Session = {
   device_name: string;
   active: number;
   bridge_connected?: boolean;
+  model?: string;
 };
 type Event = {
   id: string;
@@ -85,6 +86,7 @@ type Snapshot = {
     directory: string;
     requested: number;
     state: string;
+    model?: string;
   }[];
 };
 const empty: Snapshot = {
@@ -113,6 +115,8 @@ const appName = (app: string) =>
     "claude-channel": "Claude Code",
     pull: "Read on demand",
   })[app] || app;
+const appLabel = (app: string, model?: string) =>
+  model ? appName(app) + " · " + model : appName(app);
 type DeliveryHealth = "good" | "warn" | "down";
 const targetHealth = (
   target: string,
@@ -817,7 +821,7 @@ function App() {
                       <div>
                         <strong>{p.title}</strong>
                         <small>
-                          {appName(p.app)} · {p.native}
+                          {appLabel(p.app, p.model)} · {p.native}
                         </small>
                         <small>
                           {p.app === "codex-queue"
@@ -1080,9 +1084,9 @@ function App() {
                         <div>
                           <strong>{r.title}</strong>
                           <p>
-                            {appName(r.app)} wants to join this room. Approving
-                            connects its exact session; nothing is routed until
-                            then.
+                            {appLabel(r.app, r.model)} wants to join this room.
+                            Approving connects its exact session; nothing is
+                            routed until then.
                           </p>
                           <small>{r.native}</small>
                         </div>
@@ -1717,7 +1721,11 @@ function App() {
                       <div>
                         <strong>{p.title}</strong>
                         <small>
-                          {appName(p.app)} · {p.device_name}
+                          {appLabel(
+                            p.app,
+                            s.bindings.find((b) => b.id === p.id)?.model,
+                          )}{" "}
+                          · {p.device_name}
                         </small>
                         <span className="participant-status">
                           {p.app === "codex-queue"
@@ -2010,6 +2018,7 @@ function App() {
                 title: d.get("title"),
                 native: d.get("native"),
                 directory: d.get("directory"),
+                model: d.get("model"),
               });
               setEditing({
                 id: result.id,
@@ -2057,6 +2066,14 @@ function App() {
               <input
                 name="directory"
                 placeholder="/absolute/path/to/workspace"
+              />
+            </label>
+            <label>
+              Model · optional
+              <input
+                name="model"
+                placeholder="e.g. claude-opus-4-8"
+                maxLength={100}
               />
             </label>
             <p className="small">
