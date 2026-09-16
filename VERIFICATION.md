@@ -1,5 +1,33 @@
 # Desktop acceptance — 2026-09-15
 
+## Installed candidate 2026-09-16: delivery visibility, palette and plans view
+
+Frontend candidate `d149ca2` (installed bundle embeds `index-DUxlIgS6.js`)
+adds three verified slices on top of `8abfc91`: composer target delivery
+health with pre-send warnings for dead bridges, a ⌘K command palette covering
+navigation, compose actions, messages, participants and objects, and a
+first-class Plans & work page for plans, work requests, reviews and decisions.
+All 61 Python tests pass unchanged; TypeScript check, Vite production build and
+the ad-hoc signed Tauri bundle pass; the DMG re-packages and verifies. The
+send→snapshot round trip through the installed helper was re-verified after
+install. Browser verification of all three slices ran against the live helper
+on port 1420 including a synthetic dead-bridge binding, a palette
+navigation/creation flow and a plan create→list round trip; synthetic rows
+were removed afterward.
+
+**Keychain recovery after install:** replacing the app bundle invalidates the
+login-keychain item ACL for the device credential (Security framework error
+-25320: only the creating helper binary may read without a prompt). Resolution:
+the stale item was deleted, device mode/name/room settings and hub device rows
+were reset, and the new helper recreated its credential through the normal
+`create` path. Room "M1" is host, online, with zero events; all pre-existing
+room content had been cleared with user authorization before this rebuild.
+**Consequence:** existing bindings were cleared and each conversation must be
+reconnected once in the app. A future installer should carry the credential
+forward with an ACL that survives updates, or migrate the token explicitly.
+
+Historical records below are retained for the earlier candidates.
+
 ## Current installed candidate: Claude app pull acceptance at 10:48 CEST
 
 Implementation candidate `c51ac6f3ad5d0089b535fb772d36af4c22bd0d46`
