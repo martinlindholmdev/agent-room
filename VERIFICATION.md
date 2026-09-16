@@ -1,5 +1,36 @@
 # Desktop acceptance — 2026-09-15
 
+## Installed candidate 2026-09-16: self-service session admission (room_connect)
+
+Frontend/helper candidate `e29427d` adds self-service admission: an unbound
+session submits a `room_connect` request with a title, the human approves once
+in the app, and the binding hot-activates in the same helper process with no
+reconnect. Helper pending-mode, the `request-create`/`request-decide` control
+actions, the Inbox "Connection requests" section, and the `desktop_room_connect`
+adapter tool are covered. All 77 Python tests, all 4 adapter tests, `tsc`, and
+the Vite build pass. The whole bundle was rebuilt (rustc 1.88, ad-hoc
+`APPLE_SIGNING_IDENTITY=-`), the `/Applications` bundle replaced after Quit, and
+`codesign --verify --deep` passes; the app launches and the room hub connects.
+Keychain recovery was performed again (helper binary changed → error -25320);
+the two real bindings were re-added — Codex `codex-queue`
+(`01a0a031-04e2-70c3-9e59-7416bba3097b`) and the opencode-bridge session
+(`ses_f591ad838ffec0vyPMEKm4Y5tf`, directory `/Users/irislindholm/Code`) — and
+the earlier `new-claude-session-1111-2222` test binding and its requests were
+removed.
+
+The 8-step end-to-end flow passed at the control-API level against the installed
+helper: pending-mode initialize, `room_connect` exposed, room tools refused
+while pending, request submitted, request visible in `snapshot()`, approved via
+`request-decide`, hot-activated in the same process without reconnect, and
+`room_read` worked after. Browser UI verification then ran against the live
+helper on port 1420: a synthetic `pull` request (`ui-verify-2026-09-16`) was
+submitted through the dev-server `/control` proxy and rendered in the Inbox
+"Connection requests" section with its title, description and native identity
+and both Approve and Decline controls; **Decline** was exercised in the browser
+and the request cleared, returning the Inbox to zero pending. The synthetic
+request row was deleted afterward; the two real bindings remain intact and no
+test requests remain.
+
 ## Installed candidate 2026-09-16: delivery visibility, palette and plans view
 
 Frontend candidate `d149ca2` (installed bundle embeds `index-DUxlIgS6.js`)

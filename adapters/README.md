@@ -18,6 +18,10 @@ The installable app includes these files at `Contents/Resources/adapters/`.
    It supplies `desktop_room_read`, `desktop_room_post`, `desktop_room_ack`,
    `desktop_room_context`, and `desktop_room_workflow` tools. Use these for
    desktop messages; existing `room_*` tools may still address the live v2 room.
+   When the session is not yet bound, `desktop_room_connect` is exposed instead:
+   it submits a titled admission request that the human approves once in the
+   app, after which the binding hot-activates and the room tools become usable
+   without a reconnect.
 5. Send a synthetic message from Agent Room, confirm the agent explicitly calls
    `desktop_room_ack` after reading, and replies using `reply_to`. A submitted
    receipt, session-idle event, or native API response is insufficient proof.
