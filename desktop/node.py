@@ -66,6 +66,10 @@ def hub_call(hub, token, action, data):
         return hub.pair_approve(actor, data['id'])
     if action == 'revoke':
         return hub.revoke(actor, data['device'], room)
+    if action == 'room-create':
+        return hub.room_create(actor, data['title'], data.get('id'))
+    if action == 'room-rename':
+        return hub.room_rename(actor, room, data['title'])
     raise ValueError('unknown protocol action')
 
 
@@ -88,6 +92,9 @@ class Node(Database):
         ''')
         if 'model' not in [r[1] for r in self.db.execute('PRAGMA table_info(requests)')]:
             self.db.execute("ALTER TABLE requests ADD COLUMN model TEXT DEFAULT ''")
+            self.db.commit()
+        if 'room' not in [r[1] for r in self.db.execute('PRAGMA table_info(requests)')]:
+            self.db.execute("ALTER TABLE requests ADD COLUMN room TEXT DEFAULT 'general'")
             self.db.commit()
         self.db.execute("UPDATE outbox SET state='saved' WHERE state='sending'")
         self.db.commit()
@@ -162,6 +169,30 @@ class Node(Database):
         self.work.set()
         return {'joined': True}
 
+    def room_select(self, room):
+        """Switch this device's active room. The hub is the source of truth for
+        which rooms this device may see, so this is a live grant check, not a
+        purely local flag flip."""
+        require(self.get('mode'), 'create or join a room first')
+        require(isinstance(room, str) and 0 < len(room) <= 64, 'room id required')
+        active = self.get('room', 'general')
+        snapshot = self.call('snapshot', {'room': active, 'cursor': {}})
+        require(any(r['id'] == room for r in snapshot.get('rooms', [])), 'room not granted to this device')
+        self.put('room', room)
+        self.work.set()
+        return {'room': room}
+
+    def room_create(self, title):
+        require(self.get('mode'), 'create or join a room first')
+        created = self.call('room-create', {'title': title})
+        self.put('room', created['id'])
+        self.work.set()
+        return created
+
+    def room_rename(self, room, title):
+        require(self.get('mode'), 'create or join a room first')
+        return self.call('room-rename', {'room': room, 'title': title})
+
     def bindings(self):
         return [dict(json.loads(r['data']), paused=bool(r['paused'])) for r in self.rows('SELECT * FROM bindings')]
 
@@ -172,11 +203,12 @@ class Node(Database):
     def bind(self, data):
         native, app = data['native'].strip(), data['app']
         directory = data.get('directory', '').strip()
+        room = data.get('room') or self.get('room', 'general')
         if app == 'opencode-bridge':
             require(directory and Path(directory).is_absolute() and Path(directory).is_dir(), 'OpenCode requires its exact existing local directory')
         existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
         model = (data.get('model') or (existing.get('model', '') if existing else '')).strip()
-        binding = self.call('bind', {'native': native, 'app': app, 'title': data['title'], 'room': self.get('room', 'general'), 'generation': existing['generation'] if existing else 1})
+        binding = self.call('bind', {'native': native, 'app': app, 'title': data['title'], 'room': room, 'generation': existing['generation'] if existing else 1})
         if app == 'opencode-bridge':
             require(not existing or existing.get('directory') == directory, 'native workspace binding is immutable')
             binding['directory'] = directory
@@ -189,7 +221,11 @@ class Node(Database):
     def enqueue(self, kind, body, sender='', event_id=None):
         require(self.get('mode'), 'create or join a room first')
         binding = self.binding(sender) if sender else None
-        event = {'version': VERSION, 'id': event_id or uid(), 'room': self.get('room', 'general'), 'sender': sender,
+        # An agent's own content always goes to its own bound room, regardless of
+        # whichever room is currently selected in the UI. Only human/device-authored
+        # content (no sender) follows the active room.
+        room = binding['room'] if binding else self.get('room', 'general')
+        event = {'version': VERSION, 'id': event_id or uid(), 'room': room, 'sender': sender,
                  'generation': binding['generation'] if binding else None, 'kind': kind, 'body': body}
         require(len(encoded(event).encode('utf-8')) <= 205_000, 'event too large')
         with self.lock, self.db:
@@ -219,10 +255,14 @@ class Node(Database):
         existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
         if existing:
             return {'state': 'already-connected', 'binding': existing['id']}
+        # Capture the room selected right now; approval may happen after the human
+        # has switched the active room, and the new session must join the room it
+        # actually asked to join.
+        room = self.get('room', 'general')
         with self.lock, self.db:
-            self.db.execute("INSERT INTO requests(native,app,title,directory,requested,state,model) VALUES(?,?,?,?,?,'pending',?) "
-                            "ON CONFLICT(native,app) DO UPDATE SET title=excluded.title, directory=excluded.directory, requested=excluded.requested, state='pending', model=excluded.model",
-                            (native, app, title or native, directory, time.time(), model))
+            self.db.execute("INSERT INTO requests(native,app,title,directory,requested,state,model,room) VALUES(?,?,?,?,?,'pending',?,?) "
+                            "ON CONFLICT(native,app) DO UPDATE SET title=excluded.title, directory=excluded.directory, requested=excluded.requested, state='pending', model=excluded.model, room=excluded.room",
+                            (native, app, title or native, directory, time.time(), model, room))
         self.work.set()
         return {'state': 'pending', 'note': 'Request submitted. Ask the person to approve it in the Agent Room app, then call room_connect again.'}
 
@@ -236,11 +276,26 @@ class Node(Database):
             else:
                 self.db.execute("UPDATE requests SET state='rejected' WHERE native=? AND app=?", (native, app))
         if approve:
-            binding = self.bind({'native': native, 'app': app, 'title': row['title'], 'directory': row['directory'], 'model': row['model']})
+            binding = self.bind({'native': native, 'app': app, 'title': row['title'], 'directory': row['directory'], 'model': row['model'], 'room': row['room']})
         return {'state': 'approved' if approve else 'rejected', 'binding': binding['id'] if binding else None}
 
     def requests(self):
         return [dict(r) for r in self.rows('SELECT * FROM requests ORDER BY requested')]
+
+    def rooms_in_use(self):
+        """Every room this device currently has local content in: the active room
+        (shown in the UI) plus any room a local binding is attached to, so a
+        background agent's room keeps syncing even while the UI looks elsewhere."""
+        return sorted({b['room'] for b in self.bindings()} | {self.get('room', 'general')})
+
+    def cursor_for(self, room):
+        cursors = self.get('cursors') or {}
+        if room in cursors:
+            return cursors[room]
+        # Pre-multi-room installs kept a single global 'cursor' for the only room
+        # that ever existed, 'general'. Fall back to it until the first receive()
+        # after upgrade populates the per-room 'cursors' setting.
+        return self.get('cursor', 0) if room == 'general' else 0
 
     def sync_once(self):
         if not self.get('mode'):
@@ -269,17 +324,24 @@ class Node(Database):
             else:
                 with self.lock, self.db:
                     self.db.execute("UPDATE outbox SET state='sent',error='' WHERE id=?", (row['id'],))
-        events = self.call('events', {'room': self.get('room'), 'after': self.get('cursor', 0)})['events']
-        self.receive(events)
-        snapshot = {}
-        cursor = None
-        while True:
-            page = self.call('snapshot', {'room': self.get('room'), 'cursor': cursor})
-            for key,value in page.items():
-                if key != 'next':snapshot.setdefault(key,[]).extend(value)
-            cursor = page.get('next')
-            if not cursor:break
-        self.put('snapshot', snapshot)
+        rooms = self.rooms_in_use()
+        for room in rooms:
+            events = self.call('events', {'room': room, 'after': self.cursor_for(room)})['events']
+            self.receive(events)
+        snapshots = {}
+        for room in rooms:
+            merged, cursor = {}, None
+            while True:
+                page = self.call('snapshot', {'room': room, 'cursor': cursor})
+                for key, value in page.items():
+                    if key != 'next':merged.setdefault(key,[]).extend(value)
+                cursor = page.get('next')
+                if not cursor:break
+            snapshots[room] = merged
+        self.put('snapshots', snapshots)
+        # Keep the singular 'snapshot' key mirroring the active room, for callers
+        # (and older cached data shapes) that only ever knew about one room.
+        self.put('snapshot', snapshots.get(self.get('room', 'general'), {}))
         self.online, self.error = True, ''
 
     def receive(self, events):
@@ -289,7 +351,10 @@ class Node(Database):
             for event in events:
                 self.db.execute('INSERT OR IGNORE INTO cache VALUES(?,?,?)', (event['seq'], event['id'], encoded(event)))
             if events:
-                self.db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ('cursor', encoded(max(self.get('cursor', 0), events[-1]['seq']))))
+                room = events[-1]['room']
+                cursors = self.get('cursors') or {}
+                cursors[room] = max(self.cursor_for(room), events[-1]['seq'])
+                self.db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ('cursors', encoded(cursors)))
         self.route_cache()
 
     def route_cache(self):
@@ -320,18 +385,21 @@ class Node(Database):
                 'desktop_helper': os.path.realpath(__import__('sys').executable) if getattr(__import__('sys'), 'frozen', False) else str(Path(__file__).resolve().parent.parent/'desktop_main.py')}
 
     def report(self):
-        for row in self.delivery.status(self.get('room', 'general')):
-            state = row['state']
-            if state in ('sending', 'relaying'):
-                continue
-            previous = self.rows('SELECT state FROM reports WHERE id=?', (row['id'],))
-            if previous and previous[0]['state'] == state:
-                continue
-            self.enqueue('receipt', {'message': row['message'], 'target': row['session'], 'state': state, 'reason': row['reason'],
-                         'revision': row['revision'], 'recovered_unsent': state=='pending' and row['reason']=='Reconnected; never submitted'},
-                         row['session'], event_id='receipt:'+row['id']+':'+str(row['revision']))
-            with self.lock, self.db:
-                self.db.execute('INSERT INTO reports VALUES(?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state', (row['id'], state))
+        # Report on every room a binding lives in, not only the room currently
+        # shown in the UI, so a background agent's receipts still reach the hub.
+        for room in {b['room'] for b in self.bindings()}:
+            for row in self.delivery.status(room):
+                state = row['state']
+                if state in ('sending', 'relaying'):
+                    continue
+                previous = self.rows('SELECT state FROM reports WHERE id=?', (row['id'],))
+                if previous and previous[0]['state'] == state:
+                    continue
+                self.enqueue('receipt', {'message': row['message'], 'target': row['session'], 'state': state, 'reason': row['reason'],
+                             'revision': row['revision'], 'recovered_unsent': state=='pending' and row['reason']=='Reconnected; never submitted'},
+                             row['session'], event_id='receipt:'+row['id']+':'+str(row['revision']))
+                with self.lock, self.db:
+                    self.db.execute('INSERT INTO reports VALUES(?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state', (row['id'], state))
 
     def start(self):
         def send_loop():
@@ -353,8 +421,18 @@ class Node(Database):
                     self.stop.wait(1)
                     continue
                 try:
-                    events = self.call('events', {'room': self.get('room'), 'after': self.get('cursor', 0), 'timeout': 25})['events']
+                    active_room = self.get('room', 'general')
+                    events = self.call('events', {'room': active_room, 'after': self.cursor_for(active_room), 'timeout': 25})['events']
                     self.receive(events)
+                    # The active room gets a real long-poll wake-up; other rooms with
+                    # local bindings are checked without blocking so a background
+                    # agent's room keeps moving even while the UI looks elsewhere.
+                    for room in self.rooms_in_use():
+                        if room == active_room:
+                            continue
+                        more = self.call('events', {'room': room, 'after': self.cursor_for(room), 'timeout': 0})['events']
+                        if more:
+                            self.receive(more)
                     self.work.set()
                 except Exception:
                     self.stop.wait(3)
@@ -427,7 +505,7 @@ class Node(Database):
             result, size = [], 0
             for row in self.rows('SELECT event FROM cache WHERE seq>? ORDER BY seq', (cursor,)):
                 event = json.loads(row['event'])
-                if event['kind'] != 'message':
+                if event['kind'] != 'message' or event.get('room') != room:
                     continue
                 if result and size+len(encoded(event)) > 40000:
                     break
@@ -465,19 +543,29 @@ class Node(Database):
             self.work.set()
             return result
         if name in ('room_sessions', 'room_context'):
-            snapshot = self.get('snapshot', {})
+            # Always this binding's own room, never whatever room the UI happens
+            # to be showing right now.
+            snapshot = self.get('snapshots', {}).get(room, {})
             return {'sessions': snapshot.get('sessions', []), 'objects': snapshot.get('objects', []) if name == 'room_context' else []}
         if name == 'room_workflow':
             return self.enqueue('object', args, identity, args.get('request_id'))
         raise ValueError('unknown room tool')
 
     def snapshot(self):
+        active_room = self.get('room', 'general')
         cached = self.get('snapshot', {})
-        events = [json.loads(r['event']) for r in self.rows('SELECT event FROM cache ORDER BY seq')]
+        if not cached.get('rooms'):
+            # Before the first successful sync, fall back to just the active
+            # room so the UI always has something to render.
+            cached = dict(cached, rooms=[{'id': active_room, 'title': 'General' if active_room == 'general' else active_room}])
+        events = [json.loads(r['event']) for r in self.rows('SELECT event FROM cache ORDER BY seq')
+                  if json.loads(r['event']).get('room') == active_room]
+        outbox = [dict(r, event=json.loads(r['event'])) for r in self.rows("SELECT * FROM outbox WHERE state<>'sent'")]
+        outbox = [r for r in outbox if r['event'].get('room', active_room) == active_room]
         return dict(cached, configured=bool(self.get('mode')), mode=self.get('mode'), name=self.get('name', ''),
-                    device=self.get('device'), room=self.get('room', 'general'), online=self.online, error=self.error,
+                    device=self.get('device'), room=active_room, activeRoom=active_room, online=self.online, error=self.error,
                     paused=self.get('paused', False), hub_url=self.get('hub_url', ''), events=events,
-                    outbox=[dict(r, event=json.loads(r['event'])) for r in self.rows("SELECT * FROM outbox WHERE state<>'sent'")],
+                    outbox=outbox,
                     requests=[r for r in self.requests() if r['state'] == 'pending'],
                     bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in self.bindings()])
 
@@ -506,6 +594,12 @@ class Node(Database):
             return self.request_decide(data['native'], data['app'], bool(data.get('approve', True)))
         if action in ('pair-create', 'pair-approve', 'revoke'):
             return self.call(action, dict(data, room=self.get('room', 'general')))
+        if action == 'room-select':
+            return self.room_select(data['room'])
+        if action == 'room-create':
+            return self.room_create(data['title'])
+        if action == 'room-rename':
+            return self.room_rename(data.get('room') or self.get('room', 'general'), data['title'])
         if action == 'send':
             return self.enqueue('message', {'text': data['text'], 'targets': data.get('targets', []), 'reply_to': data.get('reply_to')}, event_id=data.get('id'))
         if action == 'object':

@@ -62,11 +62,14 @@ type Receipt = {
   state: string;
   reason: string;
 };
+type Room = { id: string; title: string };
 type Snapshot = {
   configured: boolean;
   mode: string;
   name: string;
   room: string;
+  activeRoom: string;
+  rooms: Room[];
   device: string;
   online: boolean;
   error: string;
@@ -94,6 +97,8 @@ const empty: Snapshot = {
   mode: "",
   name: "",
   room: "general",
+  activeRoom: "general",
+  rooms: [{ id: "general", title: "General" }],
   device: "",
   online: false,
   error: "",
@@ -108,6 +113,8 @@ const empty: Snapshot = {
   pairing: [],
   requests: [],
 };
+const roomName = (rooms: Room[], id: string) =>
+  rooms.find((r) => r.id === id)?.title || (id === "general" ? "General" : id);
 // Read-on-demand app types: no push, no idle-wake. "pull" is the Claude-app
 // connector; "mcp" is the generic, self-identified connector for any MCP client.
 const PULL_LIKE = ["pull", "mcp"];
@@ -542,16 +549,36 @@ function App() {
           Search<span className="shortcut">⌘ K</span>
         </button>
         <div className="nav-label">YOUR ROOMS</div>
+        {(s.rooms.length ? s.rooms : empty.rooms).map((r) => (
+          <button
+            key={r.id}
+            className={
+              "nav " +
+              (view === "room" && s.activeRoom === r.id ? "selected" : "")
+            }
+            onClick={safe(async () => {
+              if (r.id !== s.activeRoom) await act("room-select", { room: r.id }, false);
+              setView("room");
+              setQuery("");
+            })}
+          >
+            <Hash size={17} />
+            {r.title}
+            {s.activeRoom === r.id && <span className="room-dot" />}
+          </button>
+        ))}
         <button
-          className={"nav " + (view === "room" ? "selected" : "")}
-          onClick={() => {
+          className="nav"
+          onClick={safe(async () => {
+            const title = window.prompt("Name this room")?.trim();
+            if (!title) return;
+            await act("room-create", { title }, false);
             setView("room");
             setQuery("");
-          }}
+          })}
         >
-          <Hash size={17} />
-          General
-          <span className="room-dot" />
+          <Plus size={17} />
+          New room
         </button>
         <div className="sidebar-note">
           <div className="tiny-rule" />
@@ -582,7 +609,7 @@ function App() {
             Room <ChevronRight size={13} />
             <strong>
               {view === "room"
-                ? "General"
+                ? roomName(s.rooms, s.activeRoom)
                 : view === "inbox"
                   ? "Inbox"
                   : view === "objects"

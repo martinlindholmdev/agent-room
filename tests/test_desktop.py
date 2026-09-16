@@ -183,6 +183,26 @@ class HubTests(unittest.TestCase):
         db=sqlite3.connect(path);db.execute('PRAGMA user_version=99');db.close()
         with self.assertRaises(ValueError):Hub(str(path))
 
+    def test_room_create_grants_creator_lists_alongside_general_and_renames(self):
+        created = self.hub.room_create(self.actor, 'Feature Room')
+        self.assertTrue(created['id'])
+        self.assertEqual('Feature Room', created['title'])
+        rooms = self.hub.snapshot(self.actor, 'general')['rooms']
+        self.assertEqual({'general', created['id']}, {r['id'] for r in rooms})
+        other, _, _ = self.paired()
+        with self.assertRaises(ValueError):
+            self.hub.access(other, created['id'])
+        self.hub.room_rename(self.actor, created['id'], 'Renamed')
+        rooms = self.hub.snapshot(self.actor, 'general')['rooms']
+        self.assertEqual('Renamed', next(r['title'] for r in rooms if r['id'] == created['id']))
+        with self.assertRaises(ValueError):
+            self.hub.room_rename(self.actor, 'does-not-exist', 'X')
+
+    def test_room_create_dedupes_slug_for_repeated_names(self):
+        a = self.hub.room_create(self.actor, 'Same Name')
+        b = self.hub.room_create(self.actor, 'Same Name')
+        self.assertNotEqual(a['id'], b['id'])
+
 
 class NodeTests(unittest.TestCase):
     def setUp(self):
@@ -532,3 +552,87 @@ class RequestTests(NodeTests):
             self.node.request_create(uid(), 'random', 'Bad app synthetic session')
         with self.assertRaises(ValueError):
             self.node.bind({'native': uid(), 'app': 'random', 'title': 'Bad app synthetic session'})
+
+
+class RoomTests(NodeTests):
+    """Multi-room: 'general' stays the default and existing single-room installs
+    keep working; a new room is a fully separate content scope."""
+
+    def test_default_general_path_untouched_when_no_room_ever_created(self):
+        snap = self.node.snapshot()
+        self.assertEqual('general', snap['room'])
+        self.assertEqual('general', snap['activeRoom'])
+        self.assertIn('general', [r['id'] for r in snap['rooms']])
+        binding = self.bind()
+        self.assertEqual('general', binding['room'])
+
+    def test_room_create_switches_active_room_and_binding_attaches_to_it(self):
+        created = self.node.control('room-create', {'title': 'Build slice'})
+        self.assertEqual(created['id'], self.node.get('room'))
+        self.assertNotEqual('general', created['id'])
+        binding = self.bind()
+        self.assertEqual(created['id'], binding['room'])
+
+    def test_switching_rooms_scopes_snapshot_messages(self):
+        self.node.enqueue('message', {'text': 'General only', 'targets': []})
+        created = self.node.control('room-create', {'title': 'Build slice'})
+        self.node.enqueue('message', {'text': 'New room only', 'targets': []})
+        self.node.sync_once()
+        texts = [e['body']['text'] for e in self.node.snapshot()['events'] if e['kind'] == 'message']
+        self.assertEqual(['New room only'], texts)
+        self.node.control('room-select', {'room': 'general'})
+        self.node.sync_once()
+        texts = [e['body']['text'] for e in self.node.snapshot()['events'] if e['kind'] == 'message']
+        self.assertEqual(['General only'], texts)
+
+    def test_agent_post_and_workflow_object_go_to_the_binding_room_not_active_room(self):
+        created = self.node.control('room-create', {'title': 'Build slice'})
+        binding = self.bind()
+        self.node.control('room-select', {'room': 'general'})
+        # The bound agent posts and files work while the human has since
+        # navigated back to General; its content must still land in its own room.
+        self.node.tool(binding['id'], 'room_post', {'text': 'Still in my own room'})
+        self.node.sync_once()
+        general_texts = [e['body']['text'] for e in self.node.snapshot()['events'] if e['kind'] == 'message']
+        self.assertEqual([], general_texts)
+        self.node.control('room-select', {'room': created['id']})
+        self.node.sync_once()
+        own_texts = [e['body']['text'] for e in self.node.snapshot()['events'] if e['kind'] == 'message']
+        self.assertEqual(['Still in my own room'], own_texts)
+
+    def test_request_created_in_active_room_binds_into_it_even_after_switching_away(self):
+        created = self.node.control('room-create', {'title': 'Feature branch'})
+        result = self.node.request_create(uid(), 'codex-queue', 'Room-scoped synthetic task')
+        self.assertEqual('pending', result['state'])
+        self.node.control('room-select', {'room': 'general'})
+        pending = next(r for r in self.node.snapshot()['requests'] if r['title'] == 'Room-scoped synthetic task')
+        self.assertEqual(created['id'], pending['room'])
+        decided = self.node.request_decide(pending['native'], 'codex-queue', True)
+        self.assertEqual('approved', decided['state'])
+        binding = next(b for b in self.node.snapshot()['bindings'] if b['native'] == pending['native'])
+        self.assertEqual(created['id'], binding['room'])
+
+    def test_room_rename_updates_title_everywhere_it_is_listed(self):
+        created = self.node.control('room-create', {'title': 'Old name'})
+        self.node.control('room-rename', {'room': created['id'], 'title': 'New name'})
+        self.node.sync_once()
+        rooms = self.node.snapshot()['rooms']
+        self.assertEqual('New name', next(r['title'] for r in rooms if r['id'] == created['id']))
+
+    def test_room_select_requires_a_grant_and_rejects_when_missing(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), handler(self.node, 'not-used', True))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        other = Node(Path(self.tmp.name)/'B', MemoryVault(), allow_loopback=True)
+        try:
+            invitation = self.node.call('pair-create', {'room': 'general'})
+            url = 'http://127.0.0.1:%d' % server.server_port
+            other.join_request(url, invitation['id'], invitation['proof'], 'Synthetic Mac B')
+            self.node.call('pair-approve', {'id': invitation['id']})
+            other.join_finish()
+            created = self.node.control('room-create', {'title': 'A private slice'})
+            with self.assertRaises(ValueError):
+                other.control('room-select', {'room': created['id']})
+            self.assertEqual({'room': 'general'}, other.control('room-select', {'room': 'general'}))
+        finally:
+            other.db.close();other.delivery.db.close();server.shutdown();server.server_close()

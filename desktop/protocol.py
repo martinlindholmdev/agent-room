@@ -5,6 +5,7 @@ stable IDs. A transport receipt never implies a model has read the message.
 """
 import hashlib
 import json
+import re
 import secrets
 import sqlite3
 import threading
@@ -153,6 +154,33 @@ class Hub(Database):
             self.db.execute('UPDATE sessions SET active=0,generation=generation+1 WHERE device=?', (device,))
             self.changed.notify_all()
             return {'revoked': device}
+
+    def _room_slug(self, title):
+        base = re.sub(r'[^a-z0-9]+', '-', title.strip().lower()).strip('-') or 'room'
+        candidate, suffix = base, 1
+        while self.db.execute('SELECT 1 FROM rooms WHERE id=?', (candidate,)).fetchone():
+            suffix += 1
+            candidate = '%s-%d' % (base, suffix)
+        return candidate
+
+    def room_create(self, actor, title, room=None):
+        require(isinstance(title, str) and 0 < len(title.strip()) <= 80, 'room name required')
+        with self.lock, self.db:
+            require(self.db.execute('SELECT 1 FROM devices WHERE id=? AND active=1', (actor['id'],)).fetchone(), 'device revoked')
+            identity = (room or '').strip() or self._room_slug(title)
+            require(isinstance(identity, str) and 0 < len(identity) <= 64, 'invalid room identity')
+            require(not self.db.execute('SELECT 1 FROM rooms WHERE id=?', (identity,)).fetchone(), 'room already exists')
+            self.db.execute('INSERT INTO rooms VALUES(?,?)', (identity, title.strip()))
+            self.db.execute('INSERT INTO grants VALUES(?,?)', (actor['id'], identity))
+            return {'id': identity, 'title': title.strip()}
+
+    def room_rename(self, actor, room, title):
+        require(isinstance(title, str) and 0 < len(title.strip()) <= 80, 'room name required')
+        with self.lock, self.db:
+            self.access(actor, room)
+            require(self.db.execute('SELECT 1 FROM rooms WHERE id=?', (room,)).fetchone(), 'room not found')
+            self.db.execute('UPDATE rooms SET title=? WHERE id=?', (title.strip(), room))
+            return {'id': room, 'title': title.strip()}
 
     def bind(self, actor, room, native, app, title, generation=1):
         require(app in ('codex-queue', 'opencode-bridge', 'claude-channel') + PULL_LIKE, 'unsupported adapter')
