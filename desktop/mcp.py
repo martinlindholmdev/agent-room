@@ -20,6 +20,8 @@ TOOLS = [
      {'delivery_ids': {'type': 'array', 'items': {'type': 'string'}}, 'read_through': {'type': 'integer'}}),
     ('room_workflow', 'Create/update a versioned plan, work request, decision, review or advisory claim. Current version + 1 required. Review revisions invalidate approval.',
      {'id': {'type': 'string'}, 'type': {'type': 'string', 'enum': ['plan', 'work', 'decision', 'review', 'claim']}, 'version': {'type': 'integer'}, 'data': {'type': 'object'}}),
+    ('room_status', 'Self-report this exact session\'s presence state to the room (working/idle/blocked/done). Explicit self-report only; this is never inferred or scraped from activity.',
+     {'state': {'type': 'string', 'enum': ['working', 'idle', 'blocked', 'done']}}),
 ]
 MONITOR_TOOL = ('room_monitor_setup',
     'Prepare a private trigger-only feed for the native Claude app Monitor tool. '

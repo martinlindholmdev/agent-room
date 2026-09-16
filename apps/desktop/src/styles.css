@@ -727,6 +727,17 @@ main {
   color: var(--soft);
   margin-top: 5px;
 }
+.presence-dot {
+  font-size: 6px;
+  vertical-align: middle;
+  color: var(--soft);
+}
+.presence-dot.presence-working {
+  color: var(--text);
+}
+.presence-dot.presence-blocked {
+  color: var(--muted);
+}
 .context-empty {
   font-size: 10px;
   line-height: 1.8;

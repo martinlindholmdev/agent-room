@@ -155,6 +155,20 @@ class Hub(Database):
             self.changed.notify_all()
             return {'revoked': device}
 
+    def session_remove(self, actor, room, session):
+        """Remove one session row this same device created, e.g. when the local
+        binding it backs is disconnected. Idempotent: a missing session is a
+        no-op, not an error, so a stale or already-removed binding never blocks
+        local cleanup."""
+        with self.lock, self.db:
+            self.access(actor, room)
+            row = self.db.execute('SELECT 1 FROM sessions WHERE id=? AND room=? AND device=?', (session, room, actor['id'])).fetchone()
+            if not row:
+                return {'removed': False}
+            self.db.execute('DELETE FROM sessions WHERE id=?', (session,))
+            self.changed.notify_all()
+            return {'removed': True}
+
     def _room_slug(self, title):
         base = re.sub(r'[^a-z0-9]+', '-', title.strip().lower()).strip('-') or 'room'
         candidate, suffix = base, 1

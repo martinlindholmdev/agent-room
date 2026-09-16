@@ -39,6 +39,7 @@ type Session = {
   active: number;
   bridge_connected?: boolean;
   model?: string;
+  state?: string;
 };
 type Event = {
   id: string;
@@ -128,6 +129,14 @@ const appName = (app: string) =>
   })[app] || app;
 const appLabel = (app: string, model?: string) =>
   model ? appName(app) + " · " + model : appName(app);
+// Self-reported presence only (detection is clever; being told is sturdier).
+const PRESENCE_LABEL: Record<string, string> = {
+  working: "Working",
+  idle: "Idle",
+  blocked: "Blocked",
+  done: "Done",
+};
+const presenceLabel = (state?: string) => PRESENCE_LABEL[state || "idle"];
 type DeliveryHealth = "good" | "warn" | "down";
 const targetHealth = (
   target: string,
@@ -878,6 +887,20 @@ function App() {
                         }}
                       >
                         Setup details
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={safe(() => {
+                          if (
+                            !window.confirm(
+                              `Remove the connection to "${p.title}"? The session is disconnected; reconnecting later creates a new one.`,
+                            )
+                          )
+                            return Promise.resolve();
+                          return act("binding-remove", { binding: p.id }, false);
+                        })}
+                      >
+                        Remove
                       </button>
                     </div>
                   ))}
@@ -1752,7 +1775,21 @@ function App() {
                         <Terminal size={14} />
                       </div>
                       <div>
-                        <strong>{p.title}</strong>
+                        <strong>
+                          {p.title}{" "}
+                          <span
+                            className={
+                              "presence-dot presence-" +
+                              (s.bindings.find((b) => b.id === p.id)?.state ||
+                                "idle")
+                            }
+                            title={presenceLabel(
+                              s.bindings.find((b) => b.id === p.id)?.state,
+                            )}
+                          >
+                            ●
+                          </span>
+                        </strong>
                         <small>
                           {appLabel(
                             p.app,

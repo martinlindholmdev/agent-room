@@ -156,6 +156,36 @@ class HostIdentityTests(unittest.TestCase):
         self.assertTrue(json.loads(replies[2]['result']['content'][0]['text'])['connected'])
         self.assertEqual(60000,json.loads(replies[3]['result']['content'][0]['text'])['timeout_ms'])
 
+    def test_room_status_tool_is_listed_and_dispatches_like_other_room_tools(self):
+        binding = dict(self.bindings[-1], generation=3)
+        calls = []
+        def local(_root, action, data):
+            calls.append((action, data))
+            if action == 'snapshot':
+                return {'bindings': [binding]}
+            if action == 'tool':
+                self.assertEqual(binding['id'], data['binding'])
+                self.assertEqual('room_status', data['name'])
+                self.assertEqual({'state': 'blocked'}, data['args'])
+                return {'id': binding['id'], 'state': 'blocked'}
+            self.fail('room_status issued unexpected local action: '+action)
+        requests=[json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{}})+'\n',
+                  json.dumps({'jsonrpc':'2.0','id':2,'method':'tools/list'})+'\n',
+                  json.dumps({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'room_status','arguments':{'state':'blocked'}}})+'\n']
+        with patch.dict(os.environ,{'CLAUDE_CODE_SESSION_ID':'claude-c'},clear=True), \
+             patch('desktop.mcp.local_call',side_effect=local), \
+             patch('desktop.mcp.sys.stdin',requests), \
+             patch('desktop.mcp.sys.stdout',new_callable=io.StringIO) as output:
+            run('unused',None,claude_app=True)
+        replies=[json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([1,2,3],[reply['id'] for reply in replies])
+        tools = {tool['name']: tool for tool in replies[1]['result']['tools']}
+        self.assertIn('room_status', tools)
+        self.assertEqual(['working', 'idle', 'blocked', 'done'],
+                          tools['room_status']['inputSchema']['properties']['state']['enum'])
+        self.assertEqual({'id': binding['id'], 'state': 'blocked'},
+                          json.loads(replies[2]['result']['content'][0]['text']))
+
     def test_host_specific_incoming_instructions(self):
         delivery={'id':'delivery-1','session':'binding-1'}
         message={'id':'message-1','from_session':'sender-1','text':'Synthetic'}

@@ -83,6 +83,13 @@ class Delivery:
             self.db.execute('UPDATE sessions SET active=0 WHERE id=? AND channel=?', (session, channel))
             self.db.execute("UPDATE deliveries SET state='unavailable',reason='session closed' WHERE session=? AND channel=? AND state='pending'", (session, channel))
 
+    def forget(self, session, channel):
+        """Full local removal for a binding that has been disconnected, unlike
+        close() which only deactivates a session that may still reconnect."""
+        with self.lock, self.db:
+            self.db.execute('DELETE FROM sessions WHERE id=? AND channel=?', (session, channel))
+            self.db.execute('DELETE FROM deliveries WHERE session=? AND channel=?', (session, channel))
+
     def targets(self, msg):
         """Snapshot at post time. Legacy names never authorize a task prompt."""
         candidates = self.sessions(msg['channel'])

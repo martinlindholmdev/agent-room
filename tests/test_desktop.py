@@ -636,3 +636,68 @@ class RoomTests(NodeTests):
             self.assertEqual({'room': 'general'}, other.control('room-select', {'room': 'general'}))
         finally:
             other.db.close();other.delivery.db.close();server.shutdown();server.server_close()
+
+
+class PresenceAndRemovalTests(NodeTests):
+    """Self-reported presence (Feature A) and disconnect/remove (Feature B)."""
+
+    def test_binding_state_round_trips_defaults_idle_and_rejects_invalid(self):
+        binding = self.bind()
+        snap = self.node.snapshot()
+        self.assertEqual('idle', next(b for b in snap['bindings'] if b['id'] == binding['id'])['state'])
+        self.node.control('binding-state', {'binding': binding['id'], 'state': 'working'})
+        snap = self.node.snapshot()
+        self.assertEqual('working', next(b for b in snap['bindings'] if b['id'] == binding['id'])['state'])
+        with self.assertRaises(ValueError):
+            self.node.control('binding-state', {'binding': binding['id'], 'state': 'nonsense'})
+        # Also addressable by native+app, like bind() itself.
+        self.node.control('binding-state', {'native': binding['native'], 'app': binding['app'], 'state': 'blocked'})
+        snap = self.node.snapshot()
+        self.assertEqual('blocked', next(b for b in snap['bindings'] if b['id'] == binding['id'])['state'])
+        with self.assertRaises(ValueError):
+            self.node.control('binding-state', {'binding': 'does-not-exist', 'state': 'working'})
+
+    def test_room_status_mcp_tool_sets_the_calling_sessions_state(self):
+        binding = self.bind()
+        result = self.node.tool(binding['id'], 'room_status', {'state': 'blocked'})
+        self.assertEqual({'id': binding['id'], 'state': 'blocked'}, result)
+        snap = self.node.snapshot()
+        self.assertEqual('blocked', next(b for b in snap['bindings'] if b['id'] == binding['id'])['state'])
+        with self.assertRaises(ValueError):
+            self.node.tool(binding['id'], 'room_status', {'state': 'nope'})
+        # Also reachable through the generic 'tool' control action the MCP layer uses.
+        request = {'binding': binding['id'], 'native': binding['native'], 'generation': binding['generation'],
+                   'name': 'room_status', 'args': {'state': 'done'}}
+        self.node.control('tool', request)
+        self.assertEqual('done', next(b for b in self.node.snapshot()['bindings'] if b['id'] == binding['id'])['state'])
+
+    def test_binding_remove_deletes_local_and_hub_session_idempotently(self):
+        keep = self.bind()
+        gone = self.bind()
+        self.node.enqueue('message', {'text': 'to be orphaned', 'targets': [gone['id']]})
+        self.node.sync_once()
+        self.assertIn(gone['id'], [r['id'] for r in self.node.hub.rows('SELECT id FROM sessions')])
+        self.assertEqual(1, len(self.node.delivery.status('general')))
+        result = self.node.control('binding-remove', {'binding': gone['id']})
+        self.assertEqual({'removed': True, 'id': gone['id']}, result)
+        snap = self.node.snapshot()
+        remaining_ids = [b['id'] for b in snap['bindings']]
+        self.assertNotIn(gone['id'], remaining_ids)
+        self.assertIn(keep['id'], remaining_ids)
+        # Hub session row removed too.
+        self.assertNotIn(gone['id'], [r['id'] for r in self.node.hub.rows('SELECT id FROM sessions')])
+        # Local bookkeeping (offered cursor + delivery rows) cleaned up; no orphans.
+        self.assertEqual([], self.node.rows('SELECT * FROM offered WHERE binding=?', (gone['id'],)))
+        self.assertEqual([], [r for r in self.node.delivery.status('general') if r['session'] == gone['id']])
+        # Idempotent: removing again, or removing something never bound, is a no-op.
+        self.assertEqual({'removed': False}, self.node.control('binding-remove', {'binding': gone['id']}))
+        self.assertEqual({'removed': False}, self.node.control('binding-remove', {'binding': 'never-existed'}))
+        self.assertEqual({'removed': False}, self.node.control('binding-remove', {'native': 'nope', 'app': 'codex-queue'}))
+        # The other binding is completely unaffected.
+        self.assertEqual('idle', next(b for b in self.node.snapshot()['bindings'] if b['id'] == keep['id'])['state'])
+
+    def test_binding_remove_by_native_and_app_and_hub_removal_is_scoped_to_owning_device(self):
+        binding = self.bind()
+        result = self.node.control('binding-remove', {'native': binding['native'], 'app': binding['app']})
+        self.assertEqual({'removed': True, 'id': binding['id']}, result)
+        self.assertNotIn(binding['id'], [b['id'] for b in self.node.snapshot()['bindings']])

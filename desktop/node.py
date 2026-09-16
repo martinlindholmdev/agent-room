@@ -13,6 +13,11 @@ from delivery import Delivery, dispatch_one
 from desktop.protocol import Database, Hub, MAX_QUEUE, PULL_LIKE, VERSION, encoded, require, uid
 
 
+# Self-reported presence only. Detection is clever; being told is sturdier: no
+# scraping of native activity, just an explicit binding-state/room_status call.
+PRESENCE_STATES = ('working', 'idle', 'blocked', 'done')
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         raise ValueError('redirect refused; confirm the hub URL')
@@ -66,6 +71,8 @@ def hub_call(hub, token, action, data):
         return hub.pair_approve(actor, data['id'])
     if action == 'revoke':
         return hub.revoke(actor, data['device'], room)
+    if action == 'session-remove':
+        return hub.session_remove(actor, room, data['session'])
     if action == 'room-create':
         return hub.room_create(actor, data['title'], data.get('id'))
     if action == 'room-rename':
@@ -194,7 +201,13 @@ class Node(Database):
         return self.call('room-rename', {'room': room, 'title': title})
 
     def bindings(self):
-        return [dict(json.loads(r['data']), paused=bool(r['paused'])) for r in self.rows('SELECT * FROM bindings')]
+        result = []
+        for r in self.rows('SELECT * FROM bindings'):
+            data = json.loads(r['data'])
+            data.setdefault('state', 'idle')
+            data['paused'] = bool(r['paused'])
+            result.append(data)
+        return result
 
     def save_binding(self, binding):
         with self.lock, self.db:
@@ -242,6 +255,51 @@ class Node(Database):
         binding = next((b for b in self.bindings() if b['id'] == identity), None)
         require(binding is not None, 'session is not bound on this device')
         return binding
+
+    def _resolve_binding_id(self, data):
+        """UI control actions may address a binding by its id, or by the
+        native+app pair that created it (mirroring how bind() itself matches
+        an existing binding). Returns None rather than raising when nothing
+        matches, so callers can decide whether a miss is an error or a no-op."""
+        identity = data.get('binding')
+        if identity:
+            return identity
+        native, app = data.get('native'), data.get('app')
+        match = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        return match['id'] if match else None
+
+    def set_binding_state(self, identity, state):
+        """Explicit self-report only. Detection is clever; being told is
+        sturdier, so this never infers presence from activity."""
+        require(state in PRESENCE_STATES, 'invalid presence state')
+        binding = self.binding(identity)
+        binding['state'] = state
+        self.save_binding(binding)
+        self.work.set()
+        return {'id': identity, 'state': state}
+
+    def binding_remove(self, identity):
+        """Disconnect a session locally and at the hub. Idempotent: removing a
+        binding that is already gone is a no-op, not an error, so a stale UI
+        click or a double-remove never surfaces a failure."""
+        binding = next((b for b in self.bindings() if b['id'] == identity), None)
+        if binding is None:
+            return {'removed': False}
+        try:
+            self.call('session-remove', {'session': identity, 'room': binding['room']})
+        except Exception:
+            pass  # Best-effort: the local disconnect must still succeed even offline.
+        delivery_ids = [r['id'] for r in self.delivery.status(binding['room']) if r['session'] == identity]
+        with self.lock, self.db:
+            self.db.execute('DELETE FROM bindings WHERE id=?', (identity,))
+            self.db.execute('DELETE FROM offered WHERE binding=?', (identity,))
+            if delivery_ids:
+                self.db.executemany('DELETE FROM reports WHERE id=?', [(d,) for d in delivery_ids])
+        self.delivery.forget(identity, binding['room'])
+        self.bridge_leases.pop(identity, None)
+        self.bridge_seen.pop(identity, None)
+        self.work.set()
+        return {'removed': True, 'id': identity}
 
     def request_create(self, native, app, title, directory='', model=''):
         """An unbound session asks for admission. The human approves in the app."""
@@ -549,6 +607,8 @@ class Node(Database):
             return {'sessions': snapshot.get('sessions', []), 'objects': snapshot.get('objects', []) if name == 'room_context' else []}
         if name == 'room_workflow':
             return self.enqueue('object', args, identity, args.get('request_id'))
+        if name == 'room_status':
+            return self.set_binding_state(identity, args.get('state'))
         raise ValueError('unknown room tool')
 
     def snapshot(self):
@@ -594,6 +654,15 @@ class Node(Database):
             return self.request_decide(data['native'], data['app'], bool(data.get('approve', True)))
         if action in ('pair-create', 'pair-approve', 'revoke'):
             return self.call(action, dict(data, room=self.get('room', 'general')))
+        if action == 'binding-state':
+            identity = self._resolve_binding_id(data)
+            require(identity is not None, 'binding not found')
+            return self.set_binding_state(identity, data.get('state'))
+        if action == 'binding-remove':
+            identity = self._resolve_binding_id(data)
+            if identity is None:
+                return {'removed': False}
+            return self.binding_remove(identity)
         if action == 'room-select':
             return self.room_select(data['room'])
         if action == 'room-create':
