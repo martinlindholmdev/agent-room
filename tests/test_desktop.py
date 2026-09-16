@@ -494,3 +494,41 @@ class RequestTests(NodeTests):
         # A binding created directly (not through the request flow) also defaults cleanly.
         direct = self.bind('claude-channel')
         self.assertEqual('', direct['model'])
+
+    def test_generic_mcp_request_approve_binding_and_pull_like_treatment(self):
+        result = self.node.request_create('native-mcp-1', 'mcp', 'Generic agent session', model='some-model-x')
+        self.assertEqual('pending', result['state'])
+        snap = self.node.snapshot()
+        pending = next(r for r in snap['requests'] if r['native'] == 'native-mcp-1')
+        self.assertEqual('some-model-x', pending['model'])
+        decided = self.node.request_decide('native-mcp-1', 'mcp', True)
+        self.assertEqual('approved', decided['state'])
+        snap = self.node.snapshot()
+        self.assertEqual(0, len(snap['requests']))
+        binding = next(b for b in snap['bindings'] if b['native'] == 'native-mcp-1')
+        self.assertEqual('mcp', binding['app'])
+        self.assertEqual('some-model-x', binding['model'])
+        # Read-on-demand, not push: routing marks it unavailable like a pull binding,
+        # never pending, and dispatch_one never claims it for delivery.
+        message = self.node.enqueue('message', {'text': 'Synthetic generic fixture', 'targets': [binding['id']]})
+        self.node.sync_once()
+        self.assertEqual('unavailable', self.node.delivery.status('general')[0]['state'])
+        self.assertIsNone(self.node.delivery.claim())
+        request = {'binding': binding['id'], 'native': binding['native'], 'generation': binding['generation'],
+                   'name': 'room_read', 'args': {}}
+        page = self.node.control('tool', request)
+        self.assertEqual([message['id']], [event['id'] for event in page['messages']])
+        # Same watch-next primitive as pull: no push, optional idle-wake polling only.
+        watcher = {'binding': binding['id'], 'native': binding['native'], 'generation': binding['generation']}
+        status = self.node.control('watch-next', watcher)
+        self.assertGreater(status['latest'], 0)
+        ack = dict(request, name='room_ack',
+                   args={'delivery_ids': [page['deliveries'][0]['id']], 'read_through': page['read_through']})
+        self.node.control('tool', ack)
+        self.assertEqual('acknowledged', self.node.delivery.status('general')[0]['state'])
+
+    def test_unknown_app_string_rejected_by_request_create_and_bind(self):
+        with self.assertRaises(ValueError):
+            self.node.request_create(uid(), 'random', 'Bad app synthetic session')
+        with self.assertRaises(ValueError):
+            self.node.bind({'native': uid(), 'app': 'random', 'title': 'Bad app synthetic session'})

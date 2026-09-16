@@ -15,6 +15,9 @@ VERSION = 1
 MAX_BODY = 200_000
 MAX_QUEUE = 10_000
 STATES = {'proposed', 'accepted', 'working', 'blocked', 'ready for review', 'resolved', 'cancelled'}
+# Read-on-demand connectors: no push, no idle-wake. 'pull' is the original Claude-app
+# connector; 'mcp' is the generic, self-identified connector for any MCP client.
+PULL_LIKE = ('pull', 'mcp')
 
 
 def uid():
@@ -152,7 +155,7 @@ class Hub(Database):
             return {'revoked': device}
 
     def bind(self, actor, room, native, app, title, generation=1):
-        require(app in ('codex-queue', 'opencode-bridge', 'claude-channel', 'pull'), 'unsupported adapter')
+        require(app in ('codex-queue', 'opencode-bridge', 'claude-channel') + PULL_LIKE, 'unsupported adapter')
         require(isinstance(native, str) and 0 < len(native) <= 128, 'exact native session required')
         require(isinstance(title, str) and 0 < len(title) <= 200, 'conversation title required')
         if app == 'codex-queue':

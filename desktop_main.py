@@ -140,6 +140,8 @@ def main():
     parser.add_argument('--binding')
     parser.add_argument('--claude-channel', action='store_true')
     parser.add_argument('--claude-app', action='store_true')
+    parser.add_argument('--generic', action='store_true', help='Run as a generic, self-identified MCP connector (app=mcp); read-on-demand, no push.')
+    parser.add_argument('--native', help='Native session identity for --generic mode; falls back to AGENT_ROOM_NATIVE.')
     parser.add_argument('--watch-socket')
     parser.add_argument('--watch-seconds', type=int, default=1800)
     parser.add_argument('--restore-from', type=Path)
@@ -148,7 +150,7 @@ def main():
     parser.add_argument('--tool', choices=['room_read', 'room_post', 'room_ack', 'room_sessions', 'room_context', 'room_workflow'])
     args = parser.parse_args()
     if args.watch_socket:
-        if args.mcp or args.tool or args.claude_app or args.claude_channel:
+        if args.mcp or args.tool or args.claude_app or args.claude_channel or args.generic:
             parser.error('--watch-socket is only a native Monitor stdout client')
         from desktop.monitor import watch_socket
         watch_socket(args.home, args.watch_socket, args.watch_seconds)
@@ -158,10 +160,12 @@ def main():
         result=restore(args.restore_from,args.destination) if args.restore_from else stage_legacy(args.stage_legacy,args.destination)
         print(json.dumps(result))
     elif args.mcp:
-        if args.claude_channel and args.claude_app:
-            parser.error('select either --claude-channel or --claude-app')
+        if sum((args.claude_channel, args.claude_app, args.generic)) > 1:
+            parser.error('select only one of --claude-channel, --claude-app, --generic')
+        if args.native and not args.generic:
+            parser.error('--native only applies to --generic')
         from desktop.mcp import run
-        run(args.home, args.binding, args.claude_channel, args.claude_app)
+        run(args.home, args.binding, args.claude_channel, args.claude_app, args.generic, args.native)
     elif args.tool:
         if not args.binding:
             parser.error('--binding required')

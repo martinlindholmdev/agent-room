@@ -12,6 +12,10 @@ import threading
 import time
 import uuid
 
+# Read-on-demand adapters: no push, no idle-wake. 'pull' is the original Claude-app
+# connector; 'mcp' is the generic, self-identified connector for any MCP client.
+PULL_LIKE = ('pull', 'mcp')
+
 
 class Delivery:
     def __init__(self, root):
@@ -41,7 +45,7 @@ class Delivery:
     def register(self, session, channel, agent, adapter='pull', target=''):
         if not session or len(session) > 128:
             raise ValueError('session identity required')
-        if adapter not in ('pull', 'codex-queue', 'claude-channel', 'opencode-bridge'):
+        if adapter not in ('codex-queue', 'claude-channel', 'opencode-bridge') + PULL_LIKE:
             raise ValueError('unsupported delivery adapter')
         if adapter == 'codex-queue':
             if str(uuid.UUID(target)) != target:
@@ -57,7 +61,7 @@ class Delivery:
             self.db.execute('INSERT OR IGNORE INTO sessions VALUES (?,?,?,?,?,1,?)', (session, channel, agent, adapter, target, time.time()))
             self.db.execute('UPDATE sessions SET active=1,seen=? WHERE id=? AND channel=?', (time.time(), session, channel))
         return {'session': session, 'adapter': adapter, 'target': target,
-                'status': 'pull only; unsolicited delivery unavailable' if adapter == 'pull' else 'registered; receipt required'}
+                'status': 'pull only; unsolicited delivery unavailable' if adapter in PULL_LIKE else 'registered; receipt required'}
 
     def sessions(self, channel):
         with self.lock:
@@ -93,8 +97,8 @@ class Delivery:
             return []
         if not candidates:
             return [{'session': '', 'state': 'unavailable', 'reason': 'no registered recipient in this channel'}]
-        return [{'session': s['id'], 'state': 'unavailable' if s['adapter'] == 'pull' else 'pending',
-                 'reason': 'pull only; recipient must read' if s['adapter'] == 'pull' else ''} for s in candidates]
+        return [{'session': s['id'], 'state': 'unavailable' if s['adapter'] in PULL_LIKE else 'pending',
+                 'reason': 'pull only; recipient must read' if s['adapter'] in PULL_LIKE else ''} for s in candidates]
 
     def route(self, msg):
         with self.lock, self.db:

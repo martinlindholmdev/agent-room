@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 
 from delivery import Delivery, dispatch_one
-from desktop.protocol import Database, Hub, MAX_QUEUE, VERSION, encoded, require, uid
+from desktop.protocol import Database, Hub, MAX_QUEUE, PULL_LIKE, VERSION, encoded, require, uid
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -210,7 +210,7 @@ class Node(Database):
     def request_create(self, native, app, title, directory='', model=''):
         """An unbound session asks for admission. The human approves in the app."""
         native, app, title, directory, model = native.strip(), app, (title or '').strip(), (directory or '').strip(), (model or '').strip()
-        require(app in ('pull', 'codex-queue', 'opencode-bridge', 'claude-channel'), 'unsupported app')
+        require(app in ('codex-queue', 'opencode-bridge', 'claude-channel') + PULL_LIKE, 'unsupported app')
         require(native and len(native) <= 128, 'native session identity required')
         require(len(title) <= 200, 'title too long')
         require(len(model) <= 100, 'model name too long')
@@ -302,7 +302,7 @@ class Node(Database):
                 if target not in bindings:
                     continue
                 binding = bindings[target]
-                state = 'unavailable' if binding['app'] == 'pull' else 'pending'
+                state = 'unavailable' if binding['app'] in PULL_LIKE else 'pending'
                 self.delivery.route({'id': event['id'], 'channel': binding['room'], 'human': not event['sender'],
                     'delivery_targets': [{'session': target, 'state': state, 'reason': 'Pull only; open this session to read' if state == 'unavailable' else ''}]})
         with self.bridge_condition:
@@ -439,7 +439,7 @@ class Node(Database):
             return {'messages': result, 'read_through': through, 'deliveries': self.delivery.inbox(identity, room), 'note': 'Read does not acknowledge. Acknowledge only complete messages you read.'}
         if name == 'room_ack':
             ids = args.get('delivery_ids', [])
-            if binding['app'] == 'pull' and ids:
+            if binding['app'] in PULL_LIKE and ids:
                 # The inbox may list IDs beyond the bounded room_read page.
                 # A pull recipient may only confirm messages offered in a
                 # complete page to this same binding.
@@ -532,7 +532,7 @@ class Node(Database):
             return self.bridge_sent(data['binding'], data['lease'], data['delivery_id'], data['state'])
         if action == 'watch-next':
             binding = self.binding(data['binding'])
-            require(binding['app'] == 'pull' and data.get('native') == binding['native'] and
+            require(binding['app'] in PULL_LIKE and data.get('native') == binding['native'] and
                     data.get('generation') == binding['generation'],
                     'watch requires exact active pull identity and generation')
             if not self.online or self.get('paused', False) or binding.get('paused', False):

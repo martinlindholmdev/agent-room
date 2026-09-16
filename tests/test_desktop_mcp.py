@@ -3,13 +3,14 @@ import io
 import json
 import unittest
 from unittest.mock import patch
-from desktop.mcp import incoming, resolve_binding, run
+from desktop.mcp import incoming, resolve_binding, room_connect, run
 
 
 class HostIdentityTests(unittest.TestCase):
     bindings=[{'id':'a','native':'task-a','app':'codex-queue'},
               {'id':'b','native':'task-b','app':'codex-queue'},
               {'id':'c','native':'claude-c','app':'claude-channel'},
+              {'id':'e','native':'agent-x','app':'mcp'},
               {'id':'d','native':'claude-c','app':'pull'}]
 
     def test_global_configuration_selects_only_current_host_session(self):
@@ -34,6 +35,56 @@ class HostIdentityTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):resolve_binding(self.bindings,claude_app=True)
         with patch.dict(os.environ,{'CLAUDE_CODE_SESSION_ID':'claude-c'},clear=True):
             with self.assertRaises(SystemExit):resolve_binding(self.bindings+[self.bindings[-1]],claude_app=True)
+
+    def test_generic_mode_self_identifies_from_env_or_flag(self):
+        with patch.dict(os.environ,{'AGENT_ROOM_NATIVE':'agent-x'},clear=True):
+            self.assertEqual(resolve_binding(self.bindings,generic=True)['id'],'e')
+        with patch.dict(os.environ,{},clear=True):
+            self.assertEqual(resolve_binding(self.bindings,generic=True,native_arg='agent-x')['id'],'e')
+            with self.assertRaises(SystemExit):resolve_binding(self.bindings,generic=True)
+
+    def test_generic_mode_is_mutually_exclusive_with_claude_flags(self):
+        with patch.dict(os.environ,{'AGENT_ROOM_NATIVE':'agent-x'},clear=True):
+            with self.assertRaises(SystemExit):resolve_binding(self.bindings,claude_app=True,generic=True)
+            with self.assertRaises(SystemExit):resolve_binding(self.bindings,claude_channel=True,generic=True)
+
+    def test_generic_room_connect_requires_native_identity_and_reports_connected(self):
+        with patch.dict(os.environ,{},clear=True):
+            with self.assertRaises(ValueError):room_connect('unused',generic=True)
+        with patch.dict(os.environ,{'AGENT_ROOM_NATIVE':'agent-x','AGENT_ROOM_MODEL':'glm-5-3'},clear=True), \
+             patch('desktop.mcp.local_call',return_value={'bindings':self.bindings}) as local:
+            result=room_connect('unused',generic=True)
+            self.assertEqual({'state':'connected','binding':'e','note':'This session is already connected to the room.'},result)
+            local.assert_called_once_with('unused','snapshot',{})
+
+    def test_generic_mcp_run_reads_on_demand_without_monitor_tools(self):
+        binding=dict(next(b for b in self.bindings if b['id']=='e'), generation=1)
+        calls=[]
+        def local(_root,action,data):
+            calls.append((action,data))
+            if action=='snapshot':return {'bindings':[binding]}
+            if action=='tool':
+                self.assertEqual(binding['id'],data['binding'])
+                self.assertEqual(binding['native'],data['native'])
+                self.assertIsNone(data['lease'])
+                return {'messages':[], 'read_through':0}
+            self.fail('generic MCP issued unexpected local action: '+action)
+        requests=[json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{}})+'\n',
+                  json.dumps({'jsonrpc':'2.0','id':2,'method':'tools/list'})+'\n',
+                  json.dumps({'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'room_read','arguments':{}}})+'\n']
+        with patch.dict(os.environ,{'AGENT_ROOM_NATIVE':'agent-x'},clear=True), \
+             patch('desktop.mcp.local_call',side_effect=local), \
+             patch('desktop.mcp.sys.stdin',requests), \
+             patch('desktop.mcp.sys.stdout',new_callable=io.StringIO) as output:
+            run('unused',None,generic=True)
+        replies=[json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([1,2,3],[reply['id'] for reply in replies])
+        self.assertNotIn('experimental',replies[0]['result']['capabilities'])
+        tool_names=[tool['name'] for tool in replies[1]['result']['tools']]
+        self.assertNotIn('room_monitor_setup',tool_names)
+        self.assertNotIn('room_monitor_status',tool_names)
+        self.assertIn('room_read',tool_names)
+        self.assertEqual({'messages':[], 'read_through':0},json.loads(replies[2]['result']['content'][0]['text']))
 
     def test_claude_app_mcp_has_ordinary_tools_without_channel_bridge(self):
         binding=dict(self.bindings[-1], generation=3)

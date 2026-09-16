@@ -108,12 +108,16 @@ const empty: Snapshot = {
   pairing: [],
   requests: [],
 };
+// Read-on-demand app types: no push, no idle-wake. "pull" is the Claude-app
+// connector; "mcp" is the generic, self-identified connector for any MCP client.
+const PULL_LIKE = ["pull", "mcp"];
 const appName = (app: string) =>
   ({
     "codex-queue": "Codex",
     "opencode-bridge": "OpenCode",
     "claude-channel": "Claude Code",
     pull: "Read on demand",
+    mcp: "MCP (any agent)",
   })[app] || app;
 const appLabel = (app: string, model?: string) =>
   model ? appName(app) + " · " + model : appName(app);
@@ -134,7 +138,7 @@ const targetHealth = (
       health: "warn",
       note: "On another Mac · delivery depends on that device being online",
     };
-  if (session.app === "pull")
+  if (PULL_LIKE.includes(session.app))
     return {
       health: "warn",
       note: "Read on demand · the agent reads when it is active",
@@ -152,7 +156,7 @@ const targetHealth = (
   return { health: "good", note: "Bridge active · routed to this conversation" };
 };
 const receiptName = (state: string, target?: Session) =>
-  state === "unavailable" && target?.app === "pull"
+  state === "unavailable" && target && PULL_LIKE.includes(target.app)
     ? "Read on demand · awaiting agent"
     : ({
         waiting: "Waiting for device",
@@ -826,7 +830,7 @@ function App() {
                         <small>
                           {p.app === "codex-queue"
                             ? "Configured for next-turn delivery; check receipts"
-                            : p.app === "pull"
+                            : PULL_LIKE.includes(p.app)
                               ? "Configured for on-demand reading"
                               : p.bridge_connected
                                 ? "Helper bridge active; agent receipt still required"
@@ -1136,7 +1140,9 @@ function App() {
                           (r.state === "pending" &&
                             target &&
                             target.device === s.device &&
-                            !["pull", "codex-queue"].includes(target.app) &&
+                            !["pull", "mcp", "codex-queue"].includes(
+                              target.app,
+                            ) &&
                             !(binding?.bridge_connected ?? false))
                         );
                       }).length +
@@ -1154,7 +1160,7 @@ function App() {
                       (r.state === "pending" &&
                         target &&
                         target.device === s.device &&
-                        !["pull", "codex-queue"].includes(target.app) &&
+                        !["pull", "mcp", "codex-queue"].includes(target.app) &&
                         !(binding?.bridge_connected ?? false))
                     );
                   })
@@ -1167,7 +1173,7 @@ function App() {
                       r.state === "pending" &&
                       target &&
                       target.device === s.device &&
-                      !["pull", "codex-queue"].includes(target.app) &&
+                      !["pull", "mcp", "codex-queue"].includes(target.app) &&
                       !(binding?.bridge_connected ?? false);
                     return (
                       <button
@@ -1220,7 +1226,7 @@ function App() {
                     (r.state === "pending" &&
                       target &&
                       target.device === s.device &&
-                      !["pull", "codex-queue"].includes(target.app) &&
+                      !["pull", "mcp", "codex-queue"].includes(target.app) &&
                       !(binding?.bridge_connected ?? false))
                   );
                 }) &&
@@ -1512,7 +1518,7 @@ function App() {
                                     r.state === "pending" &&
                                     target &&
                                     target.device === s.device &&
-                                    !["pull", "codex-queue"].includes(
+                                    !["pull", "mcp", "codex-queue"].includes(
                                       target.app,
                                     ) &&
                                     !(binding?.bridge_connected ?? false);
@@ -1730,7 +1736,7 @@ function App() {
                         <span className="participant-status">
                           {p.app === "codex-queue"
                             ? "Next-turn delivery"
-                            : p.app === "pull"
+                            : PULL_LIKE.includes(p.app)
                               ? "Read on demand"
                               : p.device !== s.device
                                 ? "On another Mac · check receipts"
@@ -2041,6 +2047,7 @@ function App() {
                 <option value="opencode-bridge">OpenCode</option>
                 <option value="claude-channel">Claude Code</option>
                 <option value="pull">Claude app · read on demand</option>
+                <option value="mcp">MCP (any agent) · read on demand</option>
               </select>
             </label>
             <label>
@@ -2080,7 +2087,8 @@ function App() {
               Codex can receive on its next turn. OpenCode needs the local
               plugin. Claude app sessions can read messages using ordinary MCP
               tools during a turn; channel push needs separate host support.
-              Registration alone doesn’t prove receipt.
+              Any other MCP client can connect generically, self-identifying
+              its own session. Registration alone doesn’t prove receipt.
             </p>
             <button className="primary wide" disabled={busy}>
               Connect conversation <ArrowUpRight size={16} />
@@ -2104,7 +2112,9 @@ function App() {
                 ? "Copy the bundled OpenCode plugin into your OpenCode plugins folder, then restart OpenCode when its sessions are idle. The plugin finds this exact conversation automatically."
                 : editing.data.app === "pull"
                   ? "Claude app read-on-demand uses ordinary MCP tools in this existing conversation. For optional background watch, the agent can call room_monitor_setup and start its returned command with the native app Monitor tool under normal host permissions. Each watch expires after at most 30 minutes and must be renewed; real idle delivery needs a receiving read and acknowledgement."
-                  : "Connect the bundled MCP helper to this same native conversation. Claude Code channels require host support and a launch opt-in. Custom channels in research preview require the development allowlist flag; check whether this Desktop host can supply it."}
+                  : editing.data.app === "mcp"
+                    ? "Generic MCP read-on-demand uses ordinary MCP tools in this existing conversation. The connecting client self-identifies its own native session; no push and no idle-wake, the agent reads when it is active."
+                    : "Connect the bundled MCP helper to this same native conversation. Claude Code channels require host support and a launch opt-in. Custom channels in research preview require the development allowlist flag; check whether this Desktop host can supply it."}
           </p>
           <label>
             Native conversation
@@ -2127,7 +2137,9 @@ function App() {
                 ? " and --claude-channel"
                 : editing.data.app === "pull"
                   ? " and --claude-app"
-                  : ""}.
+                  : editing.data.app === "mcp"
+                    ? " and --generic (set AGENT_ROOM_NATIVE, and optionally AGENT_ROOM_MODEL)"
+                    : ""}.
               Replace the old Agent Room MCP command. The host supplies this
               conversation’s identity; never put a shared session ID in global
               configuration. Reload the MCP connection when the session is ready.
