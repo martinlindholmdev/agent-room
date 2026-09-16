@@ -433,3 +433,37 @@ class NodeTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class RequestTests(NodeTests):
+    def test_connect_request_pending_then_approved_binds_exact_session(self):
+        result = self.node.request_create('ses_newcomer', 'opencode-bridge', 'New synthetic session', self.tmp.name)
+        self.assertEqual('pending', result['state'])
+        snap = self.node.snapshot()
+        self.assertEqual(1, len(snap['requests']))
+        self.assertEqual('ses_newcomer', snap['requests'][0]['native'])
+        decided = self.node.request_decide('ses_newcomer', 'opencode-bridge', True)
+        self.assertEqual('approved', decided['state'])
+        snap = self.node.snapshot()
+        self.assertEqual(0, len(snap['requests']))
+        binding = next(b for b in snap['bindings'] if b['native'] == 'ses_newcomer')
+        self.assertEqual('New synthetic session', binding['title'])
+        # Already-connected sessions report instead of re-requesting.
+        again = self.node.request_create('ses_newcomer', 'opencode-bridge', 'New synthetic session', self.tmp.name)
+        self.assertEqual('already-connected', again['state'])
+
+    def test_connect_request_rejected_never_binds(self):
+        self.node.request_create(uid(), 'codex-queue', 'Rejected synthetic task')
+        with self.assertRaises(ValueError):
+            self.node.request_decide('missing', 'codex-queue', True)
+        rows = self.node.rows("SELECT native FROM requests WHERE state='pending'")
+        native = rows[0]['native']
+        decided = self.node.request_decide(native, 'codex-queue', False)
+        self.assertEqual('rejected', decided['state'])
+        snap = self.node.snapshot()
+        self.assertEqual(0, len(snap['requests']))
+        self.assertFalse(any(b['native'] == native for b in snap['bindings']))
+
+    def test_opencode_request_requires_real_directory(self):
+        with self.assertRaises(ValueError):
+            self.node.request_create('ses_dirless', 'opencode-bridge', 'No directory', '/nonexistent-path')

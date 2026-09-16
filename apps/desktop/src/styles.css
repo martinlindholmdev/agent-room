@@ -847,6 +847,21 @@ main {
 .object-state.ok {
   color: var(--text);
 }
+.request-list {
+  margin-bottom: 10px;
+}
+.inbox-item.request {
+  align-items: center;
+}
+.request-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.request-actions button {
+  font-size: 10px;
+  padding: 7px 13px;
+}
 .onboarding {
   max-width: 690px;
   padding: 90px 65px 50px;

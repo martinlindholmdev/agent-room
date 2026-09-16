@@ -28,6 +28,10 @@ MONITOR_TOOL = ('room_monitor_setup',
     {'duration_seconds': {'type': 'integer', 'minimum': 60, 'maximum': 1800}})
 MONITOR_STATUS = ('room_monitor_status',
     'Check whether this MCP connection has a private Monitor socket consumer. Transport status only; not proof of app wake, reading or receipt.', {})
+CONNECT_TOOL = ('room_connect',
+    'Connect or request connection for this exact session. If not yet admitted, submits a request the person approves in the Agent Room app; '
+    'call again after approval to activate without reconnecting. Never guesses or reuses another session\'s identity.',
+    {'title': {'type': 'string', 'maxLength': 200}})
 
 
 def incoming(row, message, claude_channel=False):
@@ -55,20 +59,75 @@ def resolve_binding(bindings, identity=None, claude_channel=False, claude_app=Fa
     return matches[0]
 
 
+def room_connect(root, claude_channel=False, claude_app=False, title=''):
+    """Self-service admission: submit or check a connection request for this exact session."""
+    native=os.environ.get('CLAUDE_CODE_SESSION_ID' if claude_channel or claude_app else 'CODEX_THREAD_ID')
+    app='claude-channel' if claude_channel else 'pull' if claude_app else 'codex-queue'
+    if not native:
+        raise ValueError('Host did not supply this session\'s native identity; cannot request connection')
+    snapshot=local_call(root,'snapshot',{})
+    matches=[b for b in snapshot['bindings'] if b['native']==native and b['app']==app]
+    if matches:
+        return {'state':'connected','binding':matches[0]['id'],'note':'This session is already connected to the room.'}
+    return local_call(root,'request-create',{'native':native,'app':app,'title':title or native,'directory':''})
+
+
 def run(root, identity, claude_channel=False, claude_app=False):
     snapshot=local_call(root,'snapshot',{})
-    binding=resolve_binding(snapshot['bindings'],identity,claude_channel,claude_app)
-    identity,native=binding['id'],binding['native']
-    generation=binding['generation']
+    try:
+        binding=resolve_binding(snapshot['bindings'],identity,claude_channel,claude_app)
+    except SystemExit:
+        # Pending mode: the session is not bound yet. The human approves the
+        # request in the app; this process hot-activates without a reconnect.
+        binding=None
+    if binding is not None:
+        identity,native=binding['id'],binding['native']
+        generation=binding['generation']
+    else:
+        native=os.environ.get('CLAUDE_CODE_SESSION_ID' if claude_channel or claude_app else 'CODEX_THREAD_ID')
+        app='claude-channel' if claude_channel else 'pull' if claude_app else 'codex-queue'
+        if not native:
+            raise SystemExit('Host did not supply this session\'s native identity; this connector cannot serve it.')
+        identity,generation=None,None
     lease={}
     monitor_feed = None
     write_lock = threading.Lock()
     stopped = threading.Event()
+
+    def try_activate():
+        """Check whether the human approved this session; switch to live tools."""
+        nonlocal binding, identity, generation
+        if binding is not None:
+            return True
+        snapshot=local_call(root,'snapshot',{})
+        app='claude-channel' if claude_channel else 'pull' if claude_app else 'codex-queue'
+        matches=[b for b in snapshot['bindings'] if b['native']==native and b['app']==app and (not identity or b['id']==identity)]
+        if len(matches)==1:
+            binding=matches[0]
+            identity,generation=binding['id'],binding['generation']
+            return True
+        return False
+
+    def activator():
+        # Light poll: pending connections activate within seconds of approval
+        # without any host reconnect or model invocation.
+        while not stopped.is_set() and binding is None:
+            stopped.wait(2)
+            if stopped.is_set():
+                return
+            try:
+                try_activate()
+            except Exception:
+                pass
+    threading.Thread(target=activator, daemon=True).start()
+
     def send(value):
         with write_lock:
             sys.stdout.write(json.dumps(value, ensure_ascii=False)+'\n')
             sys.stdout.flush()
     def call(name, args):
+        if binding is None:
+            raise ValueError('This session is not connected to the Agent Room yet. Call room_connect to request admission; the person approves it in the app.')
         return local_call(root, 'tool', {'binding': identity,'native':native,'generation':generation,'lease':lease.get('value'),'name': name, 'args': args})
     def channel():
         while not stopped.is_set():
@@ -96,7 +155,14 @@ def run(root, identity, claude_channel=False, claude_app=False):
             request = json.loads(line)
             method, request_id = request.get('method'), request.get('id')
             if method == 'notifications/initialized' and claude_channel and not started:
-                threading.Thread(target=channel, daemon=True).start()
+                def pending_channel():
+                    # Start the push loop only once this session is admitted.
+                    while not stopped.is_set() and binding is None:
+                        stopped.wait(2)
+                    if stopped.is_set():
+                        return
+                    channel()
+                threading.Thread(target=pending_channel, daemon=True).start()
                 started = True
             if request_id is None:
                 continue
@@ -104,17 +170,26 @@ def run(root, identity, claude_channel=False, claude_app=False):
                 capabilities = {'tools': {}}
                 if claude_channel:
                     capabilities['experimental'] = {'claude/channel': {}}
+                pending = identity is None
                 result = {'protocolVersion': request.get('params', {}).get('protocolVersion', '2025-06-18'), 'capabilities': capabilities,
                           'serverInfo': {'name': 'agent-room-desktop', 'version': '0.1.0'},
-                          'instructions': 'You are bound to exact desktop session '+identity+'. '+
-                          ('Claude app: call room_read to check messages during a turn. Optional room_monitor_setup prepares a private trigger command for the native app Monitor tool; start it under normal host permissions in this same conversation and renew after its deadline notice. Setup alone cannot prove idle wake. ' if claude_app else '')+
+                          'instructions': ('This exact session is not connected to the Agent Room yet. Call room_connect (with a short title describing this conversation) to request admission; the person approves it in the Agent Room app. After approval the room tools work in this same session without any reconnect. ' if pending else 'You are bound to exact desktop session '+identity+'. ')+
+                          ('Claude app: call room_read to check messages during a turn. Optional room_monitor_setup prepares a private trigger command for the native app Monitor tool; start it under normal host permissions in this same conversation and renew after its deadline notice. Setup alone cannot prove idle wake. ' if claude_app and not pending else '')+
                           'Only explicit room_ack acknowledges fully read content. Native delivery and work completion are separate.'}
             elif method == 'tools/list':
-                exposed = TOOLS + ([MONITOR_TOOL, MONITOR_STATUS] if claude_app else [])
+                exposed = TOOLS + ([MONITOR_TOOL, MONITOR_STATUS] if claude_app else []) + [CONNECT_TOOL]
                 result = {'tools': [{'name': name, 'description': description, 'inputSchema': {'type': 'object', 'properties': properties}} for name, description, properties in exposed]}
             elif method == 'tools/call':
                 params = request['params']
-                if claude_app and params['name'] == 'room_monitor_setup':
+                if params['name'] == 'room_connect':
+                    try_activate()
+                    if binding is not None:
+                        value = {'state': 'connected', 'binding': identity, 'note': 'This session is now connected to the room.'}
+                    else:
+                        value = room_connect(root, claude_channel, claude_app, (params.get('arguments') or {}).get('title', ''))
+                elif claude_app and params['name'] == 'room_monitor_setup':
+                    if binding is None:
+                        raise ValueError('Connect this session first with room_connect.')
                     from desktop.monitor import MonitorFeed
                     duration = params.get('arguments', {}).get('duration_seconds', 1800)
                     if type(duration) is not int or not 60 <= duration <= 1800:
@@ -129,11 +204,15 @@ def run(root, identity, claude_channel=False, claude_app=False):
                             {'binding': identity, 'native': native, 'generation': generation}))
                     value = monitor_feed.start(duration)
                 elif claude_app and params['name'] == 'room_monitor_status':
-                    local_call(root, 'watch-next',
-                        {'binding': identity, 'native': native, 'generation': generation})
-                    value = monitor_feed.status() if monitor_feed is not None else {
-                        'connected': False, 'seconds_remaining': 0,
-                        'note': 'No native Monitor socket is connected in this MCP process; this is not receiver receipt.'}
+                    if binding is None:
+                        value = {'connected': False, 'seconds_remaining': 0,
+                                 'note': 'This session is not connected to the Agent Room yet; this is not receiver receipt.'}
+                    else:
+                        local_call(root, 'watch-next',
+                            {'binding': identity, 'native': native, 'generation': generation})
+                        value = monitor_feed.status() if monitor_feed is not None else {
+                            'connected': False, 'seconds_remaining': 0,
+                            'note': 'No native Monitor socket is connected in this MCP process; this is not receiver receipt.'}
                 else:
                     value = call(params['name'], params.get('arguments', {}))
                 result = {'content': [{'type': 'text', 'text': json.dumps(value, ensure_ascii=False)}]}
@@ -145,7 +224,7 @@ def run(root, identity, claude_channel=False, claude_app=False):
             send({'jsonrpc': '2.0', 'id': request_id, 'result': result})
         except Exception:
             if isinstance(locals().get('request'), dict) and request.get('id') is not None:
-                send({'jsonrpc': '2.0', 'id': request['id'], 'result': {'isError': True, 'content': [{'type': 'text', 'text': 'Desktop room operation failed. Open Agent Room to check connection and exact binding.'}]}})
+                send({'jsonrpc': '2.0', 'id': request['id'], 'result': {'isError': True, 'content': [{'type': 'text', 'text': ('This session is not connected to the Agent Room yet. Call room_connect to request admission; the person approves it in the Agent Room app, and this session activates without reconnecting.' if binding is None else 'Desktop room operation failed. Open Agent Room to check connection and exact binding.')}]}})
     stopped.set()
     if monitor_feed is not None:
         monitor_feed.close()

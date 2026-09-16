@@ -82,6 +82,8 @@ class Node(Database):
         CREATE TABLE IF NOT EXISTS bindings(id TEXT PRIMARY KEY, data TEXT, paused INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS offered(binding TEXT PRIMARY KEY, seq INTEGER DEFAULT 0, cursor INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, state TEXT);
+        CREATE TABLE IF NOT EXISTS requests(native TEXT, app TEXT, title TEXT, directory TEXT,
+          requested REAL, state TEXT, PRIMARY KEY(native, app));
         PRAGMA user_version=1;
         ''')
         self.db.execute("UPDATE outbox SET state='saved' WHERE state='sending'")
@@ -199,6 +201,39 @@ class Node(Database):
         binding = next((b for b in self.bindings() if b['id'] == identity), None)
         require(binding is not None, 'session is not bound on this device')
         return binding
+
+    def request_create(self, native, app, title, directory=''):
+        """An unbound session asks for admission. The human approves in the app."""
+        native, app, title, directory = native.strip(), app, (title or '').strip(), (directory or '').strip()
+        require(app in ('pull', 'codex-queue', 'opencode-bridge', 'claude-channel'), 'unsupported app')
+        require(native and len(native) <= 128, 'native session identity required')
+        require(len(title) <= 200, 'title too long')
+        if app == 'opencode-bridge':
+            require(directory and Path(directory).is_absolute() and Path(directory).is_dir(), 'OpenCode requires its exact existing local directory')
+        existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        if existing:
+            return {'state': 'already-connected', 'binding': existing['id']}
+        with self.lock, self.db:
+            self.db.execute("INSERT INTO requests VALUES(?,?,?,?,?,'pending') ON CONFLICT(native,app) DO UPDATE SET title=excluded.title, directory=excluded.directory, requested=excluded.requested, state='pending'",
+                            (native, app, title or native, directory, time.time()))
+        self.work.set()
+        return {'state': 'pending', 'note': 'Request submitted. Ask the person to approve it in the Agent Room app, then call room_connect again.'}
+
+    def request_decide(self, native, app, approve=True):
+        with self.lock, self.db:
+            row = self.db.execute('SELECT * FROM requests WHERE native=? AND app=?', (native, app)).fetchone()
+            require(row is not None, 'no connection request for this session')
+            binding = None
+            if approve:
+                self.db.execute("UPDATE requests SET state='approved' WHERE native=? AND app=?", (native, app))
+            else:
+                self.db.execute("UPDATE requests SET state='rejected' WHERE native=? AND app=?", (native, app))
+        if approve:
+            binding = self.bind({'native': native, 'app': app, 'title': row['title'], 'directory': row['directory']})
+        return {'state': 'approved' if approve else 'rejected', 'binding': binding['id'] if binding else None}
+
+    def requests(self):
+        return [dict(r) for r in self.rows('SELECT * FROM requests ORDER BY requested')]
 
     def sync_once(self):
         if not self.get('mode'):
@@ -436,6 +471,7 @@ class Node(Database):
                     device=self.get('device'), room=self.get('room', 'general'), online=self.online, error=self.error,
                     paused=self.get('paused', False), hub_url=self.get('hub_url', ''), events=events,
                     outbox=[dict(r, event=json.loads(r['event'])) for r in self.rows("SELECT * FROM outbox WHERE state<>'sent'")],
+                    requests=[r for r in self.requests() if r['state'] == 'pending'],
                     bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in self.bindings()])
 
     def control(self, action, data):
@@ -457,6 +493,10 @@ class Node(Database):
             return self.join_finish()
         if action == 'bind':
             return self.bind(data)
+        if action == 'request-create':
+            return self.request_create(data['native'], data['app'], data.get('title', ''), data.get('directory', ''))
+        if action == 'request-decide':
+            return self.request_decide(data['native'], data['app'], bool(data.get('approve', True)))
         if action in ('pair-create', 'pair-approve', 'revoke'):
             return self.call(action, dict(data, room=self.get('room', 'general')))
         if action == 'send':

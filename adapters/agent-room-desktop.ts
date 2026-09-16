@@ -139,6 +139,27 @@ export const AgentRoomDesktop: Plugin = async ({ client, directory }) => {
         }),
       );
     };
+  const connect = async (
+    args: { title?: string },
+    context: { sessionID: string },
+  ) => {
+    try {
+      const binding = await forSession(context.sessionID);
+      return JSON.stringify({
+        state: "connected",
+        binding: binding.id,
+        note: "This session is already connected to the room.",
+      });
+    } catch {
+      const result = await local("request-create", {
+        native: context.sessionID,
+        app: "opencode-bridge",
+        title: args.title || "",
+        directory,
+      });
+      return JSON.stringify(result);
+    }
+  };
   return {
     event: async ({ event }) => {
       if (event.type === "server.instance.disposed") {
@@ -149,6 +170,14 @@ export const AgentRoomDesktop: Plugin = async ({ client, directory }) => {
         void discover();
     },
     tool: {
+      desktop_room_connect: tool({
+        description:
+          "Connect or request connection for this exact session to the Agent Room. If not yet admitted, submits a request the person approves in the Agent Room app; approval activates this session automatically, so call again to confirm. Include a short title describing this conversation.",
+        args: {
+          title: tool.schema.string().optional(),
+        },
+        execute: connect,
+      }),
       desktop_room_read: tool({
         description:
           "Read oldest complete unread desktop room messages. Does not acknowledge.",

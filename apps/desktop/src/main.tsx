@@ -78,6 +78,14 @@ type Snapshot = {
   outbox: { id: string; state: string; error: string; event: Event }[];
   devices: { id: string; name: string; active: number; role: string }[];
   pairing: { id: string; name: string; device: string; expires: number }[];
+  requests?: {
+    native: string;
+    app: string;
+    title: string;
+    directory: string;
+    requested: number;
+    state: string;
+  }[];
 };
 const empty: Snapshot = {
   configured: false,
@@ -96,6 +104,7 @@ const empty: Snapshot = {
   outbox: [],
   devices: [],
   pairing: [],
+  requests: [],
 };
 const appName = (app: string) =>
   ({
@@ -499,8 +508,10 @@ function App() {
         >
           <Inbox size={17} />
           Inbox
-          {pending.length > 0 && (
-            <span className="count">{pending.length}</span>
+          {pending.length + (s.requests?.length || 0) > 0 && (
+            <span className="count">
+              {pending.length + (s.requests?.length || 0)}
+            </span>
           )}
         </button>
         <button
@@ -1057,23 +1068,75 @@ function App() {
                 <div className="eyebrow">INBOX</div>
                 <h1>Open requests</h1>
                 <p className="lead">Open work and delivery issues.</p>
+                {(s.requests?.length || 0) > 0 && (
+                  <div className="request-list">
+                    <h3>
+                      Connection requests{" "}
+                      <span className="count">{s.requests!.length}</span>
+                    </h3>
+                    {s.requests!.map((r) => (
+                      <div className="inbox-item request" key={r.native + r.app}>
+                        <Circle size={18} />
+                        <div>
+                          <strong>{r.title}</strong>
+                          <p>
+                            {appName(r.app)} wants to join this room. Approving
+                            connects its exact session; nothing is routed until
+                            then.
+                          </p>
+                          <small>{r.native}</small>
+                        </div>
+                        <span className="request-actions">
+                          <button
+                            className="primary"
+                            disabled={busy}
+                            onClick={safe(() =>
+                              act("request-decide", {
+                                native: r.native,
+                                app: r.app,
+                                approve: true,
+                              }),
+                            )}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className="secondary"
+                            disabled={busy}
+                            onClick={safe(() =>
+                              act("request-decide", {
+                                native: r.native,
+                                app: r.app,
+                                approve: false,
+                              }),
+                            )}
+                          >
+                            Decline
+                          </button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 <h3>
                   Needs you{" "}
                   <span className="count">
-                    {s.receipts.filter((r) => {
-                      const target = session(r.target);
-                      const binding = s.bindings.find(
-                        (b) => b.id === r.target,
-                      );
-                      return (
-                        ["unavailable", "uncertain"].includes(r.state) ||
-                        (r.state === "pending" &&
-                          target &&
-                          target.device === s.device &&
-                          !["pull", "codex-queue"].includes(target.app) &&
-                          !(binding?.bridge_connected ?? false))
-                      );
-                    }).length + s.outbox.filter((o) => o.state === "failed").length}
+                    {(s.requests?.length || 0) +
+                      s.receipts.filter((r) => {
+                        const target = session(r.target);
+                        const binding = s.bindings.find(
+                          (b) => b.id === r.target,
+                        );
+                        return (
+                          ["unavailable", "uncertain"].includes(r.state) ||
+                          (r.state === "pending" &&
+                            target &&
+                            target.device === s.device &&
+                            !["pull", "codex-queue"].includes(target.app) &&
+                            !(binding?.bridge_connected ?? false))
+                        );
+                      }).length +
+                      s.outbox.filter((o) => o.state === "failed").length}
                   </span>
                 </h3>
                 {s.receipts
@@ -1157,7 +1220,8 @@ function App() {
                       !(binding?.bridge_connected ?? false))
                   );
                 }) &&
-                  !s.outbox.some((o) => o.state === "failed") && (
+                  !s.outbox.some((o) => o.state === "failed") &&
+                  !(s.requests?.length || 0) && (
                     <div className="quiet-empty">
                       <Check size={17} />
                       Nothing needs your attention right now.
