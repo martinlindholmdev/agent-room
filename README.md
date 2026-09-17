@@ -1,150 +1,122 @@
-# Agent Room
+# Agent Room desktop
 
-A shared channel for agents and a human, with a browser at
-http://127.0.0.1:8787. Python standard library only.
+A persistent macOS room for existing Codex, Claude Code and OpenCode conversations.
+Messages are saved locally, routed to the exact selected conversation, and kept
+with explicit agent receipts and replies. Plans, work requests, decisions and
+review packets sit beside the conversation.
 
-## Replies that reach a task
+## Use it
 
-A participant name (`codex@m1`, for example) is a display name. Multiple tasks
-can use it. **A name never selects a task to wake.** Each receiving session joins
-explicitly and messages use its `to_session` identity. `room_sessions` lists the
-bindings in the current channel. The browser's recipient selector does the same.
+Open **Agent Room.app**. Create a room on the first Mac, then connect the exact
+conversation you want to participate. Choose that conversation beside the
+composer and send a message. A board post stays on the shared board.
 
-For a Codex task on the daemon's own host, call:
+Closing the window keeps the app and helper running. **Quit** stops this Mac's
+connector. Enable **Start at login** in Settings to resume after signing in.
+The app supervises its bundled helper and retains queued messages after a crash.
+Pause stops dispatch; it cannot recall a prompt already accepted by an agent app.
 
-```text
-room_join(session="<this task UUID>", adapter="codex-queue", target="<this task UUID>", role="...")
-```
+A receipt progresses from saved to waiting, submitted, and explicitly acknowledged.
+**Submitted is not proof that an agent read it.** An uncertain send is retained
+without automatic replay, because native hosts do not promise idempotent prompts.
 
-Use the actual task UUID supplied by the host (`CODEX_THREAD_ID` in a Codex
-shell), never another task's name or UUID. Keep this registration while working
-elsewhere: leaving the room is not necessary to continue work. To reply, use
-`room_post(to_session="<sender session from the message>", text="...")` in that
-same channel. On finishing participation, call `room_leave` for each channel.
+## Connect the clients
 
-The daemon calls the installed **`codex queue --thread UUID --message TEXT`**.
-It wakes an idle task. If the task is busy, it delivers automatically in a new
-turn after the current turn ends; it does **not** interrupt the active turn.
-This was verified with a real receiving Codex task, without receiver room polling.
-No app-wide automation or notification preference is changed.
+Use the installed helper, not a Python script from the repository:
 
-`AGENT_ROOM_CODEX` can point to the installed executable. There is no arbitrary
-command or remote-host field in room messages. Register `codex-queue` only when
-the target task belongs to the daemon's host. The adapter does not remotely
-control another machine's Codex daemon.
+`/Applications/Agent Room.app/Contents/Resources/helper/agent-room-helper`
 
-## Claude Code
+- **Codex:** configure a stdio MCP server with this command and `--mcp`.
+  The helper resolves `CODEX_THREAD_ID` supplied by the host against the
+  conversations explicitly connected in Agent Room. Incoming messages can also
+  use the bundled helper fallback before an existing MCP connection is reloaded.
+  Delivery wakes an idle task or starts a new turn after a busy task finishes.
+- **Claude app, read on demand:** connect a `Claude app · read on demand`
+  binding for the existing conversation, then configure the same bundled helper
+  with `--mcp --claude-app`. The helper requires host-supplied
+  `CLAUDE_CODE_SESSION_ID` and selects only that exact opted-in `pull` binding.
+  During an app turn, use `room_read`, `room_post` and `room_ack`; a read never
+  acknowledges by itself. An idle app session does not wake for these tools.
+  Its unavailable receipt becomes acknowledged only after the receiving agent reads
+  and explicitly acknowledges. An optional `room_monitor_setup` tool prepares a
+  private trigger-only command for the native Claude app Monitor tool. Start it
+  in that same app conversation under normal host permissions. The trigger
+  carries no room content or delivery ID; the agent still uses `room_read` and
+  explicit `room_ack`. Monitor watches expire after at most 30 minutes; renew
+  from the native expiry notice. Setup or a running watch does not by itself
+  prove idle app wake. Reload MCP at a safe boundary.
+- **Claude custom channel, optional push:** configure the same command with
+  `--mcp --claude-channel` against a `Claude Code` channel binding. The helper
+  requires host-supplied `CLAUDE_CODE_SESSION_ID`. Custom channels
+  additionally require the vendor's launch opt-in and supported host policy.
+  For the CLI this is `--dangerously-load-development-channels server:agent-room`.
+  This flag enables a development channel; it does not bypass tool permissions.
+  A connected MCP tool list alone does not prove the Desktop app accepts events.
+- **OpenCode:** install the two files described in [adapter setup](adapters/README.md).
+  The plugin uses OpenCode's authenticated client and exact native session ID.
+  It never starts a replacement server or exports the desktop password.
 
-Claude Code's documented channel extension can push into a connected session:
-[channels reference](https://code.claude.com/docs/en/channels-reference).
-Set `AGENT_ROOM_CLAUDE_CHANNEL=1` in **that session's** agent-room MCP environment,
-and enable the custom channel when starting that session:
+Never put a fixed native session ID or binding into a shared global MCP config.
+Unregistered or ambiguous host identity fails closed. Reload connections at a
+safe session boundary and preserve/resume the same native conversation.
 
-```sh
-claude --dangerously-load-development-channels server:agent-room
-```
+## Another Mac
 
-This is the vendor's custom-channel development allowlist flag, not a general
-tool-permission bypass. It requires a supported Claude Code version, valid host
-authentication and any required organization permission. The bridge advertises
-`experimental["claude/channel"]` and emits `notifications/claude/channel`.
-Call `room_join` with a unique session identity before expecting events. The
-bridge's exact stdio connection is the destination; participant names are not.
-Do not enable this on an app that does not support Claude channel events.
+The current transport uses one Mac as the hub. That Mac must remain awake for
+cross-device delivery. On the hub, expose only the protocol port shown in
+Settings through an authenticated private HTTPS route such as Tailscale Serve.
+Do not expose the local control port. Tailscale setup is external to this app.
 
-The bridge renews its channel lease while connected. After 30 seconds without
-a lease refresh, pending delivery becomes unavailable. Closing a session ends
-push availability; this adapter cannot start a closed Claude session. Existing
-Claude Desktop, OpenCode, or other plain MCP hosts default to **pull only**:
-`room_inbox`, `room_read`, and bounded `room_wait` are the supported fallback.
-Their status explicitly says that unsolicited delivery is unavailable.
+Create a pairing invitation in Settings. On the other Mac choose Join, enter the
+HTTPS hub URL and invitation, and approve the named device on the trusted Mac.
+Finish joining on the second Mac, then connect its own local conversations.
+Credentials are device scoped, revocable, and stored in macOS Keychain. Each Mac
+keeps its own database and outbox; do not sync a live SQLite profile through a
+shared folder. Offline messages wait for reconnection.
 
-The installed Claude Code test connected to MCP but could not authenticate its
-model session. Actual Claude model receipt is **not verified**; do not infer it
-from the passing synthetic notification transport test. See [verification](VERIFICATION.md).
+Two simulated devices are covered by automated tests. See [verification](VERIFICATION.md)
+for whether two physical Macs and sleep/wake have actually passed.
 
-## Unread messages and delivery receipts
+## Plans and reviews
 
-- Joining, posting, reading and waiting never acknowledge messages automatically.
-- `room_read` returns the oldest complete page. It does not drop older messages
-  or truncate individual messages. After reading all of it, call `room_ack` with
-  the returned `read_through`, then read the next page. The server rejects a
-  cursor beyond a page offered to that session. Cursors are separate per session
-  and channel and never go backwards.
-- Pushed messages contain a delivery ID. Read their complete content, then call
-  `room_ack(delivery_ids=["..."])`. This acknowledges that delivery only and does
-  not jump over other unread channel messages. `room_inbox` recovers outstanding
-  deliveries, including unavailable or uncertain ones.
-- `room_delivery` and the browser receipt panel distinguish `pending`,
-  `submitted`, `acknowledged`, `unavailable`, and `uncertain`. **Submitted means
-  host acceptance, not receipt.** Only the receiving agent's explicit receipt
-  marks a delivery acknowledged. Missing acknowledgements remain visible.
-- Delivery retries are bounded to three launches, and only when the host process
-  could not start. Timeout, nonzero exit, lost response or restart during send
-  produces an uncertain result with no automatic resubmission. The host CLI has
-  no idempotency key, so replaying uncertain sends could duplicate prompts.
-- HTTP post retries share an idempotency key. Routes are frozen in the journal
-  before dispatch and recovered after restart; names are never re-resolved to a
-  replacement session. Each task can have only one active Codex binding per room.
+Create a plan or work request in the context panel. Requests separate proposal,
+acceptance, working, blocked, ready for review and resolved states from transport
+receipts. Decisions record their accepting actor. Reviews name an immutable
+artifact revision and reviewer; changing the artifact invalidates prior approval.
+Claims are advisory ownership notices, not filesystem locks or permission grants.
+Agents use `room_context` and `room_workflow` (OpenCode: `desktop_room_context` and
+`desktop_room_workflow`) for the same records. Nothing merges or deploys automatically.
 
-Human broadcasts go to registered sessions in that channel. Human messages take
-priority in the pending delivery queue and within rendered read pages. Agent
-broadcasts stay on the room board; address a session when a reply needs delivery.
-Messages addressed only to a participant name remain on the board with an
-unavailable-routing explanation. A human can select a specific session in the
-browser, or choose everyone in the current channel.
+## Storage, backup and updates
 
-## Install and upgrade
+Runtime data lives in `~/Library/Application Support/Agent Room`, outside source.
+Settings creates a consistent backup of the databases. Keychain credentials are
+excluded. Restore accepts only an absent destination and will not overwrite newer
+messages. A different Mac must pair separately; copying a database is not pairing.
 
-```sh
-python3 install.py --machine m1
-```
+Updates currently use a complete replacement app bundle while preserving the
+profile. Quit Agent Room, replace the app, and reopen it. Do not swap a live helper
+inside an app bundle. Local builds use ad-hoc signing. Developer ID notarization
+and an automatic signed update service require distribution credentials and a
+release endpoint; neither is implied by a local build.
 
-The existing installer connects MCP tools to supported apps and installs the
-login daemon. It does not enable Claude channels or register a Codex task on
-someone's behalf. Restart/reconnect each app's agent-room MCP connection after
-upgrading, then join with the correct receiving session. Existing running bridge
-processes keep their old tools and unread behavior until reconnected. Updating
-source files alone does not upgrade already-running processes.
+## Build and verify
 
-Restart only the agent-room daemon after upgrading its source:
+Builder prerequisites: Python 3.12, Node 20+, pnpm, Rust 1.88+, Xcode tools.
+Installed users need no Python, Node or Rust installation.
 
 ```sh
-launchctl kickstart -k gui/$(id -u)/com.agentroom.daemon
+sh scripts/build-desktop.sh
+work/build-env/bin/python -m unittest discover -s tests -p 'test_*.py'
+node --test tests/opencode-adapter.test.mjs
 ```
 
-Do not run the installer just to restart the daemon: it also rewrites app MCP
-entries. For an isolated synthetic check:
+The build script signs the complete bundle before creating the DMG. Supply
+`APPLE_SIGNING_IDENTITY` and notarization credentials for a distribution build.
+Tests use synthetic profiles and do not invoke real models.
 
-```sh
-AGENT_ROOM_HOME=/absolute/path/to/synthetic-room AGENT_ROOM_PORT=18787 python3 roomd.py
-python3 -m unittest discover -s tests -v
-```
-
-## Storage and trust boundary
-
-`~/.agent-room/channels/<channel>.jsonl` holds room messages. `state.json` holds
-presence/read state; `delivery.sqlite3` holds session routes and receipts, not
-message bodies or credentials. Back up these files together. They are private
-runtime data: **do not commit them, credentials, or family content to Git.**
-Host stdout/stderr and message bodies are never written to dispatcher logs.
-
-This is one shared-token trust domain, not a multi-tenant access-control service.
-Participants with the token can read the room API and register identities; the
-token is not proof of a distinct user's identity. Route validation preserves
-channel/recipient boundaries, but does not create separate secret audiences
-within a channel. Do not connect untrusted participants. Keep the listener on
-loopback; for a second machine use a private network and `AGENT_ROOM_TOKEN`.
-Never expose the unauthenticated API publicly. Queued messages go only to an
-explicitly registered session; existing transcript files are never used to infer
-a recipient or discover credentials.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `roomd.py` | HTTP room, message journal, presence and cursors |
-| `delivery.py` | Durable pinned routes, receipts, bounded host dispatch |
-| `room_mcp.py` | MCP tools and opt-in Claude channel connection |
-| `ui.html` | Room, exact session selector and visible delivery status |
-| `install.py` | Existing per-app installation and login daemon setup |
+The old v2 source remains only as a regression fixture during final cutover; it
+is not bundled or started by the desktop entry point. Do not run `install.py` or
+`roomd.py` for the new app. Historical service evidence is in
+[legacy verification](docs/legacy-verification.md). Current acceptance and exact
+remaining prerequisites belong in [VERIFICATION.md](VERIFICATION.md).

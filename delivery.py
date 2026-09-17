@@ -12,6 +12,10 @@ import threading
 import time
 import uuid
 
+# Read-on-demand adapters: no push, no idle-wake. 'pull' is the original Claude-app
+# connector; 'mcp' is the generic, self-identified connector for any MCP client.
+PULL_LIKE = ('pull', 'mcp')
+
 
 class Delivery:
     def __init__(self, root):
@@ -27,9 +31,12 @@ class Delivery:
           state TEXT, attempts INTEGER DEFAULT 0, reason TEXT, updated REAL, human INTEGER DEFAULT 0,
           UNIQUE(message, channel, session));
         ''')
-        for table, column, definition in [('sessions', 'seen', 'REAL DEFAULT 0'), ('deliveries', 'human', 'INTEGER DEFAULT 0')]:
+        for table, column, definition in [('sessions', 'seen', 'REAL DEFAULT 0'), ('deliveries', 'human', 'INTEGER DEFAULT 0'), ('deliveries', 'revision', 'INTEGER DEFAULT 0')]:
             if column not in [r[1] for r in self.db.execute('PRAGMA table_info(' + table + ')')]:
                 self.db.execute('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+        self.db.executescript('''CREATE TRIGGER IF NOT EXISTS delivery_revision
+          AFTER UPDATE OF state ON deliveries WHEN NEW.state <> OLD.state
+          BEGIN UPDATE deliveries SET revision=OLD.revision+1 WHERE id=NEW.id; END;''')
         # A crash after launching a host may have enqueued the prompt. Never replay it.
         self.db.execute("UPDATE deliveries SET state='uncertain', reason='dispatcher restarted during send' WHERE state='sending'")
         self.db.commit()
@@ -38,7 +45,7 @@ class Delivery:
     def register(self, session, channel, agent, adapter='pull', target=''):
         if not session or len(session) > 128:
             raise ValueError('session identity required')
-        if adapter not in ('pull', 'codex-queue', 'claude-channel'):
+        if adapter not in ('codex-queue', 'claude-channel', 'opencode-bridge') + PULL_LIKE:
             raise ValueError('unsupported delivery adapter')
         if adapter == 'codex-queue':
             if str(uuid.UUID(target)) != target:
@@ -54,7 +61,7 @@ class Delivery:
             self.db.execute('INSERT OR IGNORE INTO sessions VALUES (?,?,?,?,?,1,?)', (session, channel, agent, adapter, target, time.time()))
             self.db.execute('UPDATE sessions SET active=1,seen=? WHERE id=? AND channel=?', (time.time(), session, channel))
         return {'session': session, 'adapter': adapter, 'target': target,
-                'status': 'pull only; unsolicited delivery unavailable' if adapter == 'pull' else 'registered; receipt required'}
+                'status': 'pull only; unsolicited delivery unavailable' if adapter in PULL_LIKE else 'registered; receipt required'}
 
     def sessions(self, channel):
         with self.lock:
@@ -62,12 +69,12 @@ class Delivery:
 
     def heartbeat(self, session, channel):
         with self.lock, self.db:
-            self.db.execute("UPDATE sessions SET seen=? WHERE id=? AND channel=? AND adapter='claude-channel' AND active=1", (time.time(), session, channel))
+            self.db.execute("UPDATE sessions SET seen=? WHERE id=? AND channel=? AND adapter IN ('claude-channel','opencode-bridge') AND active=1", (time.time(), session, channel))
 
     def expire_channels(self):
         with self.lock, self.db:
             self.db.execute("UPDATE deliveries SET state='uncertain', reason='send did not complete; no automatic retry' WHERE state='sending' AND updated<?", (time.time()-30,))
-            rows = self.db.execute("SELECT id,channel FROM sessions WHERE active=1 AND adapter='claude-channel' AND seen<?", (time.time()-30,)).fetchall()
+            rows = self.db.execute("SELECT id,channel FROM sessions WHERE active=1 AND adapter IN ('claude-channel','opencode-bridge') AND seen<?", (time.time()-30,)).fetchall()
             for row in rows:
                 self.close(row['id'], row['channel'])
 
@@ -75,6 +82,19 @@ class Delivery:
         with self.lock, self.db:
             self.db.execute('UPDATE sessions SET active=0 WHERE id=? AND channel=?', (session, channel))
             self.db.execute("UPDATE deliveries SET state='unavailable',reason='session closed' WHERE session=? AND channel=? AND state='pending'", (session, channel))
+
+    def forget(self, session, channel):
+        """Full local removal for a binding that has been disconnected, unlike
+        close() which only deactivates a session that may still reconnect."""
+        with self.lock, self.db:
+            self.db.execute('DELETE FROM sessions WHERE id=? AND channel=?', (session, channel))
+            self.db.execute('DELETE FROM deliveries WHERE session=? AND channel=?', (session, channel))
+
+    def discard(self, delivery_id):
+        """Remove a single delivery row outright, e.g. an orphan left behind
+        by a route() that landed for a session with no binding any more."""
+        with self.lock, self.db:
+            self.db.execute('DELETE FROM deliveries WHERE id=?', (delivery_id,))
 
     def targets(self, msg):
         """Snapshot at post time. Legacy names never authorize a task prompt."""
@@ -90,8 +110,8 @@ class Delivery:
             return []
         if not candidates:
             return [{'session': '', 'state': 'unavailable', 'reason': 'no registered recipient in this channel'}]
-        return [{'session': s['id'], 'state': 'unavailable' if s['adapter'] == 'pull' else 'pending',
-                 'reason': 'pull only; recipient must read' if s['adapter'] == 'pull' else ''} for s in candidates]
+        return [{'session': s['id'], 'state': 'unavailable' if s['adapter'] in PULL_LIKE else 'pending',
+                 'reason': 'pull only; recipient must read' if s['adapter'] in PULL_LIKE else ''} for s in candidates]
 
     def route(self, msg):
         with self.lock, self.db:
@@ -129,10 +149,12 @@ class Delivery:
                 self.db.execute("UPDATE deliveries SET state='acknowledged',reason='',updated=? WHERE id=?", (time.time(), delivery_id))
         return {'acknowledged': ids}
 
-    def claim(self, session=None, channel=None, adapter=None):
+    def claim(self, session=None, channel=None, adapter=None, skip_sessions=()):
         with self.lock, self.db:
             rows = self.db.execute("SELECT d.*,s.adapter,s.target FROM deliveries d JOIN sessions s ON d.session=s.id AND d.channel=s.channel WHERE d.state='pending' AND s.active=1 ORDER BY d.human DESC, d.updated").fetchall()
             for row in rows:
+                if row['session'] in skip_sessions:
+                    continue
                 if channel and row['channel'] != channel:
                     continue
                 if adapter and row['adapter'] != adapter:
@@ -170,9 +192,9 @@ def codex_command():
     return configured or shutil.which('codex') or '/Applications/ChatGPT.app/Contents/Resources/codex'
 
 
-def dispatch_one(delivery, read_message):
+def dispatch_one(delivery, read_message, render_prompt=prompt, skip_sessions=()):
     delivery.expire_channels()
-    row = delivery.claim()
+    row = delivery.claim(skip_sessions=skip_sessions)
     if not row:
         return False
     msg = read_message(row['channel'], row['message'])
@@ -180,7 +202,7 @@ def dispatch_one(delivery, read_message):
         delivery.finish(row['id'], 'unavailable', 'source message unavailable')
         return True
     try:
-        result = subprocess.run([codex_command(), 'queue', '--thread', row['target'], '--message', prompt(row, msg)],
+        result = subprocess.run([codex_command(), 'queue', '--thread', row['target'], '--message', render_prompt(row, msg)],
                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
     except OSError:
         # Process never launched: safe bounded retry. No text/credentials in error log.

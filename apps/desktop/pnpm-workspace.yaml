@@ -1,0 +1,4 @@
+allowBuilds:
+  esbuild: true
+  agent-browser: false
+  msgpackr-extract: false

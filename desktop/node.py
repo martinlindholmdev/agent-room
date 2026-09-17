@@ -1,0 +1,824 @@
+"""Durable per-device connector and desktop operations."""
+import json
+import os
+import secrets
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+from delivery import Delivery, dispatch_one
+from desktop.protocol import Database, Hub, MAX_QUEUE, PULL_LIKE, VERSION, encoded, require, uid
+
+
+# Self-reported presence only. Detection is clever; being told is sturdier: no
+# scraping of native activity, just an explicit binding-state/room_status call.
+PRESENCE_STATES = ('working', 'idle', 'blocked', 'done')
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        raise ValueError('redirect refused; confirm the hub URL')
+
+
+def hub_url(url, allow_loopback=False):
+    parsed = urllib.parse.urlparse(url)
+    require(parsed.scheme == 'https' or (allow_loopback and parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost')), 'remote hub requires HTTPS')
+    require(parsed.hostname and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment and parsed.path in ('', '/'), 'use a hub origin without credentials or path')
+    return url.rstrip('/')
+
+
+class Remote:
+    def __init__(self, url, token='', allow_loopback=False):
+        self.url = hub_url(url, allow_loopback)
+        self.token = token
+
+    def call(self, action, data=None):
+        request = urllib.request.Request(self.url+'/v1/'+action, data=encoded(data or {}).encode(),
+                                        headers={'Content-Type': 'application/json', 'Authorization': 'Bearer '+self.token})
+        try:
+            with urllib.request.build_opener(NoRedirect()).open(request, timeout=32) as response:
+                payload=response.read(2_000_001)
+                require(len(payload)<=2_000_000, 'hub response exceeds protocol byte limit')
+                return json.loads(payload)
+        except urllib.error.HTTPError as exc:
+            # Never surface response bodies, URLs or native credentials in logs.
+            if exc.code in (400, 401, 403, 409):
+                raise ValueError('hub rejected request (%s); verify pairing, identity and version' % exc.code) from None
+            raise ConnectionError('hub unavailable') from None
+
+
+def hub_call(hub, token, action, data):
+    if action == 'pair-request':
+        return hub.pair_request(data['id'], data['proof'], data['name'], data['device'])
+    if action == 'pair-finish':
+        return hub.pair_finish(data['id'], data['proof'], data['device'], data['token'])
+    actor = hub.auth(token)
+    room = data.get('room', 'general')
+    if action == 'snapshot':
+        return hub.snapshot(actor, room, data.get('cursor'))
+    if action == 'events':
+        return {'events': hub.stream(actor, room, data.get('after', 0), data.get('timeout', 0))}
+    if action == 'event':
+        return hub.event(actor, data)
+    if action == 'bind':
+        return hub.bind(actor, room, data['native'], data['app'], data['title'], data.get('generation', 1))
+    if action == 'pair-create':
+        return hub.pair_create(actor, room)
+    if action == 'pair-approve':
+        return hub.pair_approve(actor, data['id'])
+    if action == 'revoke':
+        return hub.revoke(actor, data['device'], room)
+    if action == 'session-remove':
+        return hub.session_remove(actor, room, data['session'])
+    if action == 'room-create':
+        return hub.room_create(actor, data['title'], data.get('id'))
+    if action == 'room-rename':
+        return hub.room_rename(actor, room, data['title'])
+    raise ValueError('unknown protocol action')
+
+
+class Node(Database):
+    def __init__(self, root, vault, allow_loopback=False):
+        self.root, self.vault = Path(root).resolve(), vault
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        super().__init__(str(self.root/'device.sqlite3'))
+        # Version 1 is the original single-room schema; version 2 additionally
+        # has requests.model/requests.room (multi-room support). A device
+        # schema newer than either is refused rather than silently misread.
+        require(self.db.execute('PRAGMA user_version').fetchone()[0] in (0, 1, 2), 'device schema newer than app')
+        self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, event TEXT, state TEXT, error TEXT);
+        CREATE TABLE IF NOT EXISTS cache(seq INTEGER PRIMARY KEY, id TEXT UNIQUE, event TEXT);
+        CREATE TABLE IF NOT EXISTS bindings(id TEXT PRIMARY KEY, data TEXT, paused INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS offered(binding TEXT PRIMARY KEY, seq INTEGER DEFAULT 0, cursor INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, state TEXT);
+        CREATE TABLE IF NOT EXISTS requests(native TEXT, app TEXT, title TEXT, directory TEXT,
+          requested REAL, state TEXT, PRIMARY KEY(native, app));
+        ''')
+        # Each ALTER is independently guarded, and the version bump only
+        # happens after both have landed (or were already there), so calling
+        # setup twice -- or opening a device profile already migrated to
+        # version 2 -- is always safe and always ends at the same version.
+        # An old (pre-migration) helper opening this profile sees version 2,
+        # refuses via the require() above, and never mis-inserts against the
+        # old 6-column requests table.
+        if 'model' not in [r[1] for r in self.db.execute('PRAGMA table_info(requests)')]:
+            self.db.execute("ALTER TABLE requests ADD COLUMN model TEXT DEFAULT ''")
+        if 'room' not in [r[1] for r in self.db.execute('PRAGMA table_info(requests)')]:
+            self.db.execute("ALTER TABLE requests ADD COLUMN room TEXT DEFAULT 'general'")
+        self.db.execute('PRAGMA user_version=2')
+        self.db.execute("UPDATE outbox SET state='saved' WHERE state='sending'")
+        self.db.commit()
+        self.hub = None
+        self.allow_loopback = allow_loopback
+        self.online = False
+        self.error = ''
+        self.stop = threading.Event()
+        self.work = threading.Event()
+        self.bridge_condition = threading.Condition()
+        self.bridge_leases = {}
+        self.bridge_seen = {}
+        self.delivery = Delivery(str(self.root))
+        if not self.get('device'):
+            self.put('device', uid())
+        if self.get('mode') == 'host':
+            self.hub = Hub(str(self.root/'hub.sqlite3'))
+        # A new process fences old native bridges. Native identities remain intact.
+        for binding in self.bindings():
+            binding['generation'] += 1
+            self.save_binding(binding)
+            self.delivery.register(binding['id'], binding['room'], binding['app'], binding['app'], binding['native'] if binding['app'] == 'codex-queue' else '')
+        self.threads = []
+
+    def get(self, key, default=None):
+        rows = self.rows('SELECT value FROM settings WHERE key=?', (key,))
+        return json.loads(rows[0]['value']) if rows else default
+
+    def put(self, key, value):
+        with self.lock, self.db:
+            self.db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, encoded(value)))
+
+    def credential(self):
+        token = self.vault.get('device')
+        require(token, 'device credential missing in Keychain')
+        return token
+
+    def call(self, action, data=None):
+        if self.hub:
+            return hub_call(self.hub, self.credential(), action, data or {})
+        return Remote(self.get('hub_url'), self.credential(), self.allow_loopback).call(action, data)
+
+    def setup(self, name):
+        require(not self.get('mode'), 'device already configured')
+        require(isinstance(name, str) and 0 < len(name) <= 80, 'device name required')
+        token = secrets.token_urlsafe(48)
+        self.vault.set('device', token)
+        self.hub = Hub(str(self.root/'hub.sqlite3'))
+        self.hub.bootstrap(name, token, self.get('device'))
+        self.put('name', name)
+        self.put('room', 'general')
+        self.put('mode', 'host')
+        self.online = True
+        self.work.set()
+        return {'created': True}
+
+    def join_request(self, url, pairing, proof, name):
+        require(not self.get('mode'), 'use a separate device profile to join another hub')
+        remote = Remote(url, allow_loopback=self.allow_loopback)
+        self.vault.set('pair-proof', proof)
+        self.vault.set('device', secrets.token_urlsafe(48))
+        self.put('hub_url', remote.url)
+        self.put('pair_id', pairing)
+        self.put('name', name)
+        return remote.call('pair-request', {'id': pairing, 'proof': proof, 'name': name, 'device': self.get('device')})
+
+    def join_finish(self):
+        remote = Remote(self.get('hub_url'), allow_loopback=self.allow_loopback)
+        result = remote.call('pair-finish', {'id': self.get('pair_id'), 'proof': self.vault.get('pair-proof'), 'device': self.get('device'), 'token': self.credential()})
+        self.put('mode', 'member')
+        self.put('room', result['room'])
+        self.work.set()
+        return {'joined': True}
+
+    def room_select(self, room):
+        """Switch this device's active room. The hub is the source of truth for
+        which rooms this device may see, so this is a live grant check, not a
+        purely local flag flip."""
+        require(self.get('mode'), 'create or join a room first')
+        require(isinstance(room, str) and 0 < len(room) <= 64, 'room id required')
+        active = self.get('room', 'general')
+        snapshot = self.call('snapshot', {'room': active, 'cursor': {}})
+        require(any(r['id'] == room for r in snapshot.get('rooms', [])), 'room not granted to this device')
+        self.put('room', room)
+        self.work.set()
+        return {'room': room}
+
+    def room_create(self, title):
+        require(self.get('mode'), 'create or join a room first')
+        created = self.call('room-create', {'title': title})
+        self.put('room', created['id'])
+        self.work.set()
+        return created
+
+    def room_rename(self, room, title):
+        require(self.get('mode'), 'create or join a room first')
+        return self.call('room-rename', {'room': room, 'title': title})
+
+    def bindings(self):
+        result = []
+        for r in self.rows('SELECT * FROM bindings'):
+            data = json.loads(r['data'])
+            data.setdefault('state', 'idle')
+            data['paused'] = bool(r['paused'])
+            result.append(data)
+        return result
+
+    def save_binding(self, binding):
+        with self.lock, self.db:
+            self.db.execute('INSERT INTO bindings VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,paused=excluded.paused', (binding['id'], encoded(binding), int(binding.get('paused', False))))
+
+    def bind(self, data):
+        native, app = data['native'].strip(), data['app']
+        directory = data.get('directory', '').strip()
+        room = data.get('room') or self.get('room', 'general')
+        if app == 'opencode-bridge':
+            require(directory and Path(directory).is_absolute() and Path(directory).is_dir(), 'OpenCode requires its exact existing local directory')
+        existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        # The same native+app pair may only ever be bound into one room at a
+        # time. Without this, the manual Connect dialog can bind an
+        # already-bound session into a second room (a second hub session,
+        # UNIQUE only on device+room+app+native), after which mcp.py's
+        # resolve_binding sees two matches for the same identity and locks
+        # the helper out entirely.
+        require(not existing or existing['room'] == room, 'session already connected in another room; remove it first')
+        model = (data.get('model') or (existing.get('model', '') if existing else '')).strip()
+        binding = self.call('bind', {'native': native, 'app': app, 'title': data['title'], 'room': room, 'generation': existing['generation'] if existing else 1})
+        if app == 'opencode-bridge':
+            require(not existing or existing.get('directory') == directory, 'native workspace binding is immutable')
+            binding['directory'] = directory
+        binding['model'] = model
+        self.save_binding(binding)
+        self.delivery.register(binding['id'], binding['room'], app, app, native if app == 'codex-queue' else '')
+        self.work.set()
+        return binding
+
+    def enqueue(self, kind, body, sender='', event_id=None):
+        require(self.get('mode'), 'create or join a room first')
+        binding = self.binding(sender) if sender else None
+        # An agent's own content always goes to its own bound room, regardless of
+        # whichever room is currently selected in the UI. Only human/device-authored
+        # content (no sender) follows the active room.
+        room = binding['room'] if binding else self.get('room', 'general')
+        event = {'version': VERSION, 'id': event_id or uid(), 'room': room, 'sender': sender,
+                 'generation': binding['generation'] if binding else None, 'kind': kind, 'body': body}
+        require(len(encoded(event).encode('utf-8')) <= 205_000, 'event too large')
+        with self.lock, self.db:
+            old = self.db.execute('SELECT event FROM outbox WHERE id=?', (event['id'],)).fetchone()
+            if old:
+                require(old[0] == encoded(event), 'local idempotency ID reused for different content')
+            else:
+                require(self.db.execute("SELECT count(*) FROM outbox WHERE state='saved'").fetchone()[0] < MAX_QUEUE, 'outbox full; reconnect or cancel unsent messages')
+                self.db.execute('INSERT INTO outbox VALUES(?,?,?,?)', (event['id'], encoded(event), 'saved', ''))
+        self.work.set()
+        return {'id': event['id'], 'state': 'saved', 'event': event}
+
+    def binding(self, identity):
+        binding = next((b for b in self.bindings() if b['id'] == identity), None)
+        require(binding is not None, 'session is not bound on this device')
+        return binding
+
+    def _resolve_binding_id(self, data):
+        """UI control actions may address a binding by its id, or by the
+        native+app pair that created it (mirroring how bind() itself matches
+        an existing binding). Returns None rather than raising when nothing
+        matches, so callers can decide whether a miss is an error or a no-op."""
+        identity = data.get('binding')
+        if identity:
+            return identity
+        native, app = data.get('native'), data.get('app')
+        match = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        return match['id'] if match else None
+
+    def set_binding_state(self, identity, state):
+        """Explicit self-report only. Detection is clever; being told is
+        sturdier, so this never infers presence from activity."""
+        require(state in PRESENCE_STATES, 'invalid presence state')
+        binding = self.binding(identity)
+        binding['state'] = state
+        self.save_binding(binding)
+        self.work.set()
+        return {'id': identity, 'state': state}
+
+    def binding_remove(self, identity):
+        """Disconnect a session locally and at the hub. Idempotent: removing a
+        binding that is already gone is a no-op, not an error, so a stale UI
+        click or a double-remove never surfaces a failure."""
+        binding = next((b for b in self.bindings() if b['id'] == identity), None)
+        if binding is None:
+            return {'removed': False}
+        try:
+            self.call('session-remove', {'session': identity, 'room': binding['room']})
+        except Exception:
+            pass  # Best-effort: the local disconnect must still succeed even offline.
+        # Hold self.lock across the local delete AND delivery.forget, and take
+        # it around route_cache's own bindings snapshot + route() calls too
+        # (see route_cache). Otherwise a route_cache pass reading a stale
+        # bindings dict just before this delete can land its delivery.route()
+        # insert just after forget() ran, leaving an orphan delivery row that
+        # report() would have no binding to attribute a receipt to.
+        with self.lock, self.db:
+            delivery_ids = [r['id'] for r in self.delivery.status(binding['room']) if r['session'] == identity]
+            self.db.execute('DELETE FROM bindings WHERE id=?', (identity,))
+            self.db.execute('DELETE FROM offered WHERE binding=?', (identity,))
+            if delivery_ids:
+                self.db.executemany('DELETE FROM reports WHERE id=?', [(d,) for d in delivery_ids])
+            self.delivery.forget(identity, binding['room'])
+        self.bridge_leases.pop(identity, None)
+        self.bridge_seen.pop(identity, None)
+        self.work.set()
+        return {'removed': True, 'id': identity}
+
+    def request_create(self, native, app, title, directory='', model=''):
+        """An unbound session asks for admission. The human approves in the app."""
+        native, app, title, directory, model = native.strip(), app, (title or '').strip(), (directory or '').strip(), (model or '').strip()
+        require(app in ('codex-queue', 'opencode-bridge', 'claude-channel') + PULL_LIKE, 'unsupported app')
+        require(native and len(native) <= 128, 'native session identity required')
+        require(len(title) <= 200, 'title too long')
+        require(len(model) <= 100, 'model name too long')
+        if app == 'opencode-bridge':
+            require(directory and Path(directory).is_absolute() and Path(directory).is_dir(), 'OpenCode requires its exact existing local directory')
+        existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        if existing:
+            return {'state': 'already-connected', 'binding': existing['id']}
+        # Capture the room selected right now; approval may happen after the human
+        # has switched the active room, and the new session must join the room it
+        # actually asked to join.
+        room = self.get('room', 'general')
+        with self.lock, self.db:
+            self.db.execute("INSERT INTO requests(native,app,title,directory,requested,state,model,room) VALUES(?,?,?,?,?,'pending',?,?) "
+                            "ON CONFLICT(native,app) DO UPDATE SET title=excluded.title, directory=excluded.directory, requested=excluded.requested, state='pending', model=excluded.model, room=excluded.room",
+                            (native, app, title or native, directory, time.time(), model, room))
+        self.work.set()
+        return {'state': 'pending', 'note': 'Request submitted. Ask the person to approve it in the Agent Room app, then call room_connect again.'}
+
+    def request_decide(self, native, app, approve=True):
+        with self.lock, self.db:
+            row = self.db.execute('SELECT * FROM requests WHERE native=? AND app=?', (native, app)).fetchone()
+            require(row is not None, 'no connection request for this session')
+            binding = None
+            if approve:
+                self.db.execute("UPDATE requests SET state='approved' WHERE native=? AND app=?", (native, app))
+            else:
+                self.db.execute("UPDATE requests SET state='rejected' WHERE native=? AND app=?", (native, app))
+        if approve:
+            binding = self.bind({'native': native, 'app': app, 'title': row['title'], 'directory': row['directory'], 'model': row['model'], 'room': row['room']})
+        return {'state': 'approved' if approve else 'rejected', 'binding': binding['id'] if binding else None}
+
+    def requests(self):
+        return [dict(r) for r in self.rows('SELECT * FROM requests ORDER BY requested')]
+
+    def rooms_in_use(self):
+        """Every room this device currently has local content in: the active room
+        (shown in the UI) plus any room a local binding is attached to, so a
+        background agent's room keeps syncing even while the UI looks elsewhere."""
+        return sorted({b['room'] for b in self.bindings()} | {self.get('room', 'general')})
+
+    def cursor_for(self, room):
+        cursors = self.get('cursors') or {}
+        if room in cursors:
+            return cursors[room]
+        # Pre-multi-room installs kept a single global 'cursor' for the only room
+        # that ever existed, 'general'. Fall back to it until the first receive()
+        # after upgrade populates the per-room 'cursors' setting.
+        return self.get('cursor', 0) if room == 'general' else 0
+
+    def sync_once(self):
+        if not self.get('mode'):
+            return
+        for binding in self.bindings():
+            self.call('bind', {k: binding[k] for k in ('native', 'app', 'title', 'room', 'generation')})
+        for row in self.rows("SELECT * FROM outbox WHERE state='saved' ORDER BY rowid LIMIT 100"):
+            with self.lock, self.db:
+                claimed = self.db.execute("UPDATE outbox SET state='sending' WHERE id=? AND state='saved'", (row['id'],)).rowcount
+            if not claimed:
+                continue
+            event = json.loads(row['event'])
+            if event['sender']:
+                # Unsent events from the same native identity can renew the fencing
+                # generation; ID/body/target remain unchanged.
+                event['generation'] = self.binding(event['sender'])['generation']
+            try:
+                result = self.call('event', event)
+            except ValueError as exc:
+                with self.lock, self.db:
+                    self.db.execute("UPDATE outbox SET state='failed',error=? WHERE id=?", (str(exc), row['id']))
+            except Exception:
+                with self.lock, self.db:
+                    self.db.execute("UPDATE outbox SET state='saved' WHERE id=?", (row['id'],))
+                raise
+            else:
+                with self.lock, self.db:
+                    self.db.execute("UPDATE outbox SET state='sent',error='' WHERE id=?", (row['id'],))
+        rooms = self.rooms_in_use()
+        for room in rooms:
+            events = self.call('events', {'room': room, 'after': self.cursor_for(room)})['events']
+            self.receive(events)
+        snapshots = {}
+        for room in rooms:
+            merged, cursor = {}, None
+            while True:
+                page = self.call('snapshot', {'room': room, 'cursor': cursor})
+                for key, value in page.items():
+                    if key != 'next':merged.setdefault(key,[]).extend(value)
+                cursor = page.get('next')
+                if not cursor:break
+            snapshots[room] = merged
+        self.put('snapshots', snapshots)
+        # Keep the singular 'snapshot' key mirroring the active room, for callers
+        # (and older cached data shapes) that only ever knew about one room.
+        self.put('snapshot', snapshots.get(self.get('room', 'general'), {}))
+        self.online, self.error = True, ''
+
+    def receive(self, events):
+        # Commit complete network pages and stream cursor together. On crash before
+        # delivery.route, the entire cache is reconciled below using stable IDs.
+        with self.lock, self.db:
+            for event in events:
+                self.db.execute('INSERT OR IGNORE INTO cache VALUES(?,?,?)', (event['seq'], event['id'], encoded(event)))
+            if events:
+                room = events[-1]['room']
+                cursors = self.get('cursors') or {}
+                cursors[room] = max(self.cursor_for(room), events[-1]['seq'])
+                self.db.execute('INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ('cursors', encoded(cursors)))
+        self.route_cache()
+
+    def route_cache(self):
+        # Snapshot bindings and issue every delivery.route() call while
+        # holding self.lock, the same lock binding_remove now holds across
+        # its delete + delivery.forget. Otherwise a binding removed between
+        # this snapshot and a route() call for one of its (now stale) targets
+        # would leave an orphan delivery row with no binding behind it.
+        with self.lock:
+            bindings = {b['id']: b for b in self.bindings()}
+            for row in self.rows('SELECT event FROM cache ORDER BY seq'):
+                event = json.loads(row['event'])
+                if event['kind'] != 'message':
+                    continue
+                targets = event['body'].get('targets', [])
+                if not targets:
+                    # Board post: no explicit recipient, but resident room members
+                    # (push connectors keyed off deliveries -- codex-queue,
+                    # opencode-bridge, claude-channel -- plus Monitor/watch-next)
+                    # must still see it. Fan out to every other bound session in
+                    # this room. (wait-next needs no such fan-out: it reads the
+                    # cache directly by seq, and this event is already there.)
+                    targets = [identity for identity, binding in bindings.items()
+                               if binding['room'] == event['room'] and identity != event['sender']]
+                for target in targets:
+                    if target not in bindings:
+                        continue
+                    binding = bindings[target]
+                    state = 'unavailable' if binding['app'] in PULL_LIKE else 'pending'
+                    self.delivery.route({'id': event['id'], 'channel': binding['room'], 'human': not event['sender'],
+                        'delivery_targets': [{'session': target, 'state': state, 'reason': 'Pull only; open this session to read' if state == 'unavailable' else ''}]})
+        with self.bridge_condition:
+            self.bridge_condition.notify_all()
+
+    def source_message(self, room, message):
+        rows = self.rows('SELECT event FROM cache WHERE id=?', (message,))
+        if not rows:
+            return None
+        event = json.loads(rows[0]['event'])
+        return {'id': event['id'], 'channel': room, 'from': event['sender'] or 'person', 'from_session': event['sender'],
+                'text': event['body']['text'], 'reply_to': event['body'].get('reply_to'),
+                'note': 'This is the separate Agent Room desktop room. Use its configured room tools. If this host has only the older live-room tools, do not send an acknowledgement to the wrong server.',
+                'desktop_home': str(self.root),
+                'desktop_helper': os.path.realpath(__import__('sys').executable) if getattr(__import__('sys'), 'frozen', False) else str(Path(__file__).resolve().parent.parent/'desktop_main.py')}
+
+    def report(self):
+        # Report on every room a binding lives in, not only the room currently
+        # shown in the UI, so a background agent's receipts still reach the hub.
+        bound_ids = {b['id'] for b in self.bindings()}
+        for room in {b['room'] for b in self.bindings()}:
+            for row in self.delivery.status(room):
+                state = row['state']
+                if state in ('sending', 'relaying'):
+                    continue
+                if row['session'] not in bound_ids:
+                    # Orphaned delivery: its binding is gone (normally
+                    # binding_remove's own delivery.forget already cleans
+                    # these up; this only catches a rare race with
+                    # route_cache, or any other stray reference). There is no
+                    # binding left to attribute a receipt to, so enqueue()
+                    # would raise here on every single cycle, permanently
+                    # knocking this device offline. Discard it instead.
+                    self.delivery.discard(row['id'])
+                    with self.lock, self.db:
+                        self.db.execute('DELETE FROM reports WHERE id=?', (row['id'],))
+                    continue
+                previous = self.rows('SELECT state FROM reports WHERE id=?', (row['id'],))
+                if previous and previous[0]['state'] == state:
+                    continue
+                self.enqueue('receipt', {'message': row['message'], 'target': row['session'], 'state': state, 'reason': row['reason'],
+                             'revision': row['revision'], 'recovered_unsent': state=='pending' and row['reason']=='Reconnected; never submitted'},
+                             row['session'], event_id='receipt:'+row['id']+':'+str(row['revision']))
+                with self.lock, self.db:
+                    self.db.execute('INSERT INTO reports VALUES(?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state', (row['id'], state))
+
+    def start(self):
+        def send_loop():
+            backoff = 1
+            while not self.stop.is_set():
+                try:
+                    self.sync_once()
+                    self.report()
+                    backoff = 1
+                except Exception:
+                    self.online, self.error = False, 'Connection unavailable. Messages remain saved on this Mac.'
+                    backoff = min(30, backoff*2)
+                self.work.wait(backoff if not self.online else 1)
+                self.work.clear()
+
+        def stream_loop():
+            while not self.stop.is_set():
+                if not self.get('mode') or not self.online:
+                    self.stop.wait(1)
+                    continue
+                try:
+                    active_room = self.get('room', 'general')
+                    events = self.call('events', {'room': active_room, 'after': self.cursor_for(active_room), 'timeout': 25})['events']
+                    self.receive(events)
+                    # The active room gets a real long-poll wake-up; other rooms with
+                    # local bindings are checked without blocking so a background
+                    # agent's room keeps moving even while the UI looks elsewhere.
+                    for room in self.rooms_in_use():
+                        if room == active_room:
+                            continue
+                        more = self.call('events', {'room': room, 'after': self.cursor_for(room), 'timeout': 0})['events']
+                        if more:
+                            self.receive(more)
+                    self.work.set()
+                except Exception:
+                    self.stop.wait(3)
+
+        def dispatch_loop():
+            from desktop.mcp import incoming
+            while not self.stop.is_set():
+                try:
+                    if self.online and not self.get('paused', False):
+                        # Paused sessions stay registered and queued without being
+                        # re-routed. Do not mark them closed and lose pending work.
+                        paused = [b['id'] for b in self.bindings() if b.get('paused')]
+                        dispatch_one(self.delivery, self.source_message, incoming, paused)
+                        self.report()
+                except Exception:
+                    self.error = 'Delivery needs attention. Inspect receipts; uncertain sends are not retried.'
+                self.stop.wait(.5)
+        for fn in (send_loop, stream_loop, dispatch_loop):
+            thread = threading.Thread(target=fn, daemon=True)
+            thread.start()
+            self.threads.append(thread)
+
+    def bridge_open(self, identity, native, app, expected_generation=None):
+        binding = self.binding(identity)
+        require(binding['native'] == native and binding['app'] == app and app in ('opencode-bridge', 'claude-channel'), 'native bridge identity mismatch')
+        require(expected_generation is None or binding['generation'] == expected_generation, 'connector generation changed; reconnect exact native session')
+        lease = secrets.token_urlsafe(32)
+        self.bridge_leases[identity] = lease
+        self.bridge_seen[identity] = time.monotonic()
+        self.delivery.register(identity, binding['room'], app, app)
+        with self.delivery.lock,self.delivery.db:
+            self.delivery.db.execute("UPDATE deliveries SET state='pending',reason='Reconnected; never submitted',updated=? WHERE session=? AND channel=? AND attempts=0 AND state='unavailable' AND reason IN ('session closed','session closed before route was saved')",(time.time(),identity,binding['room']))
+        self.work.set()
+        return {'lease': lease, 'generation': binding['generation']}
+
+    def bridge_next(self, identity, lease, timeout=20):
+        binding = self.binding(identity)
+        deadline = time.monotonic()+min(20, max(0, timeout))
+        while True:
+            require(secrets.compare_digest(self.bridge_leases.get(identity, ''), lease), 'bridge superseded; reconnect exact native session')
+            self.bridge_seen[identity] = time.monotonic()
+            self.delivery.heartbeat(identity, binding['room'])
+            if self.online and not self.get('paused') and not binding.get('paused'):
+                row = self.delivery.claim(identity, binding['room'], binding['app'])
+                if row:
+                    return {'delivery': row, 'message': self.source_message(binding['room'], row['message'])}
+            if time.monotonic() >= deadline or self.stop.is_set():
+                return {'delivery': None}
+            with self.bridge_condition:
+                self.bridge_condition.wait(min(1, deadline-time.monotonic()))
+
+    def bridge_sent(self, identity, lease, delivery_id, state):
+        require(secrets.compare_digest(self.bridge_leases.get(identity, ''), lease), 'stale bridge lease')
+        binding = self.binding(identity)
+        require(any(r['id'] == delivery_id for r in self.delivery.status(binding['room']) if r['session'] == identity), 'delivery does not belong to bridge')
+        require(state in ('submitted', 'uncertain', 'unavailable'), 'invalid native send result')
+        self.delivery.finish(delivery_id, state, 'Native app accepted; awaiting explicit receipt' if state == 'submitted' else 'Native send not confirmed; no automatic retry')
+        self.work.set()
+        return {'state': state}
+
+    def wait_next(self, identity, native, generation, timeout=20):
+        """Generic resident-wake primitive for any app, including 'pull'/'mcp'
+        sessions that have no push connector at all. Blocks until there is a
+        cache message in this binding's room that this binding has not yet
+        been offered and did not itself send, or until timeout elapses.
+
+        Cache-seq based, not delivery-based: a board post (targets=[]) and a
+        human post both land in `cache` and bump the room's cursor the same
+        way a targeted post does, so both wake this call; this binding's own
+        posts never do (sender==identity is excluded). This mirrors
+        bridge_next's own lock discipline exactly -- only quick self.lock-held
+        reads (self.binding()/self.rows()) between waits, and the wait itself
+        is on the already-independent bridge_condition, which route_cache
+        notifies after every receive(). No new lock is introduced, so this
+        cannot deadlock against send_loop/stream_loop/dispatch_loop."""
+        deadline = time.monotonic()+min(20, max(0, timeout))
+        while True:
+            binding = self.binding(identity)
+            require(binding['native'] == native and binding['generation'] == generation,
+                    'wait requires exact active identity and generation')
+            room = binding['room']
+            offered = self.rows('SELECT * FROM offered WHERE binding=?', (identity,))
+            baseline = max(offered[0]['seq'], offered[0]['cursor']) if offered else 0
+            seq = 0
+            for row in self.rows('SELECT event FROM cache WHERE seq>? ORDER BY seq DESC', (baseline,)):
+                event = json.loads(row['event'])
+                if event['kind'] == 'message' and event.get('room') == room and event['sender'] != identity:
+                    seq = event['seq']
+                    break
+            if seq:
+                return {'ready': True, 'seq': seq}
+            if not self.online or self.get('paused', False) or binding.get('paused', False) or self.stop.is_set() or time.monotonic() >= deadline:
+                return {'ready': False, 'seq': baseline}
+            with self.bridge_condition:
+                self.bridge_condition.wait(min(1, deadline-time.monotonic()))
+
+    def tool(self, identity, name, args):
+        binding = self.binding(identity)
+        room = binding['room']
+        if name == 'room_post':
+            targets = [args['to_session']] if args.get('to_session') else []
+            return self.enqueue('message', {'text': args['text'], 'targets': targets, 'reply_to': args.get('reply_to')}, identity, args.get('request_id'))
+        if name in ('room_read', 'room_inbox'):
+            cursor_rows = self.rows('SELECT * FROM offered WHERE binding=?', (identity,))
+            cursor = cursor_rows[0]['cursor'] if cursor_rows else 0
+            result, size = [], 0
+            for row in self.rows('SELECT event FROM cache WHERE seq>? ORDER BY seq', (cursor,)):
+                event = json.loads(row['event'])
+                if event['kind'] != 'message' or event.get('room') != room:
+                    continue
+                if result and size+len(encoded(event)) > 40000:
+                    break
+                result.append(event)
+                size += len(encoded(event))
+            through = result[-1]['seq'] if result else cursor
+            with self.lock, self.db:
+                self.db.execute('INSERT INTO offered VALUES(?,?,?) ON CONFLICT(binding) DO UPDATE SET seq=max(seq,excluded.seq)', (identity, through, cursor))
+            return {'messages': result, 'read_through': through, 'deliveries': self.delivery.inbox(identity, room), 'note': 'Read does not acknowledge. Acknowledge only complete messages you read.'}
+        if name == 'room_ack':
+            ids = args.get('delivery_ids', [])
+            if binding['app'] in PULL_LIKE and ids:
+                # The inbox may list IDs beyond the bounded room_read page.
+                # A pull recipient may only confirm messages offered in a
+                # complete page to this same binding.
+                offered = self.rows('SELECT seq FROM offered WHERE binding=?', (identity,))
+                require(offered, 'read a complete page before acknowledging')
+                for delivery_id in ids:
+                    delivery = next((r for r in self.delivery.status(room) if r['id'] == delivery_id and r['session'] == identity), None)
+                    event = self.rows('SELECT seq FROM cache WHERE id=?', (delivery['message'],)) if delivery else []
+                    require(event and event[0]['seq'] <= offered[0]['seq'], 'receipt message was not offered in a complete page')
+            if args.get('read_through') is not None:
+                rows = self.rows('SELECT * FROM offered WHERE binding=?', (identity,))
+                # Hosts may fill optional numeric tool fields with zero. Zero
+                # advances no cursor and requires no offered read page; pushed
+                # delivery IDs still pass the exact-recipient check below.
+                cursor = args['read_through']
+                require(isinstance(cursor, int) and cursor >= 0 and
+                        (cursor == 0 or (rows and cursor <= rows[0]['seq'])),
+                        'receipt exceeds offered complete page')
+            result = self.delivery.ack(identity, room, ids)
+            if args.get('read_through') is not None:
+                with self.lock, self.db:
+                    self.db.execute('UPDATE offered SET cursor=max(cursor,?) WHERE binding=?', (args['read_through'], identity))
+            self.work.set()
+            return result
+        if name in ('room_sessions', 'room_context'):
+            # Always this binding's own room, never whatever room the UI happens
+            # to be showing right now.
+            snapshot = self.get('snapshots', {}).get(room, {})
+            return {'sessions': snapshot.get('sessions', []), 'objects': snapshot.get('objects', []) if name == 'room_context' else []}
+        if name == 'room_workflow':
+            return self.enqueue('object', args, identity, args.get('request_id'))
+        if name == 'room_status':
+            return self.set_binding_state(identity, args.get('state'))
+        raise ValueError('unknown room tool')
+
+    def rollups(self, rooms, bindings, pending_requests):
+        """Device-local rollup only: this device's own bindings and pending
+        requests, grouped by room. There is no cross-device participant data
+        in this snapshot to roll up, so a room where this device has no
+        bindings or requests of its own simply reads idle/0."""
+        priority = {'idle': 0, 'done': 1, 'working': 2, 'blocked': 3}
+        result = []
+        for room in rooms:
+            room_bindings = [b for b in bindings if b['room'] == room['id']]
+            room_requests = [r for r in pending_requests if r.get('room', 'general') == room['id']]
+            state = max((b.get('state', 'idle') for b in room_bindings), key=lambda s: priority.get(s, 0), default='idle')
+            needs = len(room_requests) + sum(1 for b in room_bindings if b.get('state') == 'blocked')
+            result.append(dict(room, rollup={'state': state, 'needs': needs}))
+        return result
+
+    def snapshot(self):
+        active_room = self.get('room', 'general')
+        cached = self.get('snapshot', {})
+        if not cached.get('rooms'):
+            # Before the first successful sync, fall back to just the active
+            # room so the UI always has something to render.
+            cached = dict(cached, rooms=[{'id': active_room, 'title': 'General' if active_room == 'general' else active_room}])
+        events = [json.loads(r['event']) for r in self.rows('SELECT event FROM cache ORDER BY seq')
+                  if json.loads(r['event']).get('room') == active_room]
+        outbox = [dict(r, event=json.loads(r['event'])) for r in self.rows("SELECT * FROM outbox WHERE state<>'sent'")]
+        outbox = [r for r in outbox if r['event'].get('room', active_room) == active_room]
+        bindings = self.bindings()
+        pending_requests = [r for r in self.requests() if r['state'] == 'pending']
+        return dict(cached, configured=bool(self.get('mode')), mode=self.get('mode'), name=self.get('name', ''),
+                    device=self.get('device'), room=active_room, activeRoom=active_room, online=self.online, error=self.error,
+                    paused=self.get('paused', False), hub_url=self.get('hub_url', ''), events=events,
+                    outbox=outbox,
+                    rooms=self.rollups(cached.get('rooms', []), bindings, pending_requests),
+                    requests=pending_requests,
+                    bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in bindings],
+                    needsYou=len(pending_requests) + sum(1 for b in bindings if b.get('state') == 'blocked'),
+                    activeCount=sum(1 for b in bindings if b.get('state') == 'working'))
+
+    def control(self, action, data):
+        if action == 'unlock':
+            if hasattr(self.vault,'retry'):self.vault.retry()
+            self.credential()
+            self.work.set()
+            return {'reconnecting': True}
+        if action == 'backup':
+            from desktop.recovery import backup
+            return backup(self, self.root/'backups'/('room-'+time.strftime('%Y%m%d-%H%M%S')+'-'+uid()[:8]))
+        if action == 'snapshot':
+            return self.snapshot()
+        if action == 'create':
+            return self.setup(data['name'])
+        if action == 'join-request':
+            return self.join_request(data['url'], data['id'], data['proof'], data['name'])
+        if action == 'join-finish':
+            return self.join_finish()
+        if action == 'bind':
+            return self.bind(data)
+        if action == 'request-create':
+            return self.request_create(data['native'], data['app'], data.get('title', ''), data.get('directory', ''), data.get('model', ''))
+        if action == 'request-decide':
+            return self.request_decide(data['native'], data['app'], bool(data.get('approve', True)))
+        if action in ('pair-create', 'pair-approve', 'revoke'):
+            return self.call(action, dict(data, room=self.get('room', 'general')))
+        if action == 'binding-state':
+            identity = self._resolve_binding_id(data)
+            require(identity is not None, 'binding not found')
+            return self.set_binding_state(identity, data.get('state'))
+        if action == 'binding-remove':
+            identity = self._resolve_binding_id(data)
+            if identity is None:
+                return {'removed': False}
+            return self.binding_remove(identity)
+        if action == 'room-select':
+            return self.room_select(data['room'])
+        if action == 'room-create':
+            return self.room_create(data['title'])
+        if action == 'room-rename':
+            return self.room_rename(data.get('room') or self.get('room', 'general'), data['title'])
+        if action == 'send':
+            return self.enqueue('message', {'text': data['text'], 'targets': data.get('targets', []), 'reply_to': data.get('reply_to')}, event_id=data.get('id'))
+        if action == 'object':
+            return self.enqueue('object', data, event_id=data.get('event_id'))
+        if action == 'pause':
+            self.put('paused', bool(data['paused']))
+            return {'paused': self.get('paused')}
+        if action == 'cancel':
+            with self.lock, self.db:
+                changed = self.db.execute("UPDATE outbox SET state='cancelled' WHERE id=? AND state='saved'", (data['id'],)).rowcount
+                require(changed, 'message already sending; cannot recall a submitted prompt')
+                return {'cancelled': data['id']}
+        if action == 'bridge-open':
+            return self.bridge_open(data['binding'], data['native'], data['app'], data.get('expected_generation'))
+        if action == 'bridge-next':
+            return self.bridge_next(data['binding'], data['lease'], data.get('timeout', 20))
+        if action == 'bridge-heartbeat':
+            binding=self.binding(data['binding'])
+            require(secrets.compare_digest(self.bridge_leases.get(binding['id'], ''), data['lease']), 'stale bridge lease')
+            self.bridge_seen[binding['id']]=time.monotonic()
+            self.delivery.heartbeat(binding['id'],binding['room'])
+            return {'alive': True}
+        if action == 'bridge-sent':
+            return self.bridge_sent(data['binding'], data['lease'], data['delivery_id'], data['state'])
+        if action == 'watch-next':
+            binding = self.binding(data['binding'])
+            require(binding['app'] in PULL_LIKE and data.get('native') == binding['native'] and
+                    data.get('generation') == binding['generation'],
+                    'watch requires exact active pull identity and generation')
+            if not self.online or self.get('paused', False) or binding.get('paused', False):
+                return {'oldest': 0, 'latest': 0}
+            oldest, latest = 0, 0
+            for delivery in self.delivery.inbox(binding['id'], binding['room']):
+                event = self.rows('SELECT seq FROM cache WHERE id=?', (delivery['message'],))
+                if event:
+                    oldest = min(oldest or event[0]['seq'], event[0]['seq'])
+                    latest = max(latest, event[0]['seq'])
+            return {'oldest': oldest, 'latest': latest}
+        if action == 'wait-next':
+            return self.wait_next(data['binding'], data.get('native'), data.get('generation'), data.get('timeout', 20))
+        if action == 'tool':
+            binding=self.binding(data['binding'])
+            require(data.get('native')==binding['native'] and data.get('generation')==binding['generation'], 'native identity or connector generation changed')
+            if binding['app'] in ('opencode-bridge','claude-channel'):
+                require(data.get('lease') and secrets.compare_digest(data['lease'],self.bridge_leases.get(binding['id'],'')), 'stale or missing native bridge lease')
+            return self.tool(data['binding'], data['name'], data.get('args', {}))
+        raise ValueError('unknown local action')
