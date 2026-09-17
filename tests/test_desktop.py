@@ -619,6 +619,26 @@ class RoomTests(NodeTests):
         rooms = self.node.snapshot()['rooms']
         self.assertEqual('New name', next(r['title'] for r in rooms if r['id'] == created['id']))
 
+    def test_bind_refuses_the_same_native_app_into_a_different_room(self):
+        """Regression for H2: binding an already-bound (native, app) pair into
+        a second room used to succeed silently -- creating a second hub
+        session and a second local binding for the same conversation -- which
+        left mcp.py's resolve_binding() seeing two matches and locking the
+        helper out entirely."""
+        first = self.bind()
+        other_room = self.node.control('room-create', {'title': 'Second room'})
+        with self.assertRaises(ValueError):
+            self.node.bind({'native': first['native'], 'app': first['app'],
+                             'title': 'Second attempt', 'room': other_room['id']})
+        bindings = [b for b in self.node.snapshot()['bindings'] if b['native'] == first['native']]
+        self.assertEqual(1, len(bindings))
+        self.assertEqual('general', bindings[0]['room'])
+        # Re-binding into its own existing room (a reconnect/refresh) is unaffected.
+        self.node.bind({'native': first['native'], 'app': first['app'],
+                         'title': 'Same room reconnect', 'room': 'general'})
+        bindings = [b for b in self.node.snapshot()['bindings'] if b['native'] == first['native']]
+        self.assertEqual(1, len(bindings))
+
     def test_room_select_requires_a_grant_and_rejects_when_missing(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), handler(self.node, 'not-used', True))
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -702,6 +722,38 @@ class PresenceAndRemovalTests(NodeTests):
         self.assertEqual({'removed': True, 'id': binding['id']}, result)
         self.assertNotIn(binding['id'], [b['id'] for b in self.node.snapshot()['bindings']])
 
+    def test_report_survives_and_cleans_an_orphan_delivery_from_a_remove_race(self):
+        """Regression for H1. If a route_cache() pass reads a bindings
+        snapshot just before binding_remove() deletes that binding, its
+        delivery.route() call can land after forget() already ran, inserting
+        a fresh delivery row for a session with no binding behind it. Before
+        the fix, report() then raised on every single cycle (enqueue()
+        requires a real binding to attribute the receipt to), which
+        send_loop caught by marking the whole device permanently offline with
+        no recovery path. report() must instead recognize and discard the
+        orphan, and go on reporting for every binding that is still real."""
+        keep = self.bind()
+        gone = self.bind()
+        self.node.control('binding-remove', {'binding': gone['id']})
+        self.assertEqual([], self.node.delivery.status('general'))
+        # Simulate the race: a route() call lands for the now-removed
+        # binding, exactly as route_cache() would if it read `gone` while it
+        # still existed and only inserted after binding_remove's forget().
+        self.node.delivery.route({'id': uid(), 'channel': 'general', 'human': True,
+                                   'delivery_targets': [{'session': gone['id'], 'state': 'pending', 'reason': ''}]})
+        self.assertEqual(1, len(self.node.delivery.status('general')))
+        for _ in range(3):
+            self.node.report()  # must not raise, and must not permanently wedge
+        self.assertEqual([], self.node.delivery.status('general'))
+        # A real, still-bound session in the same room keeps working normally.
+        message = self.node.enqueue('message', {'text': 'still fine', 'targets': [keep['id']]})
+        self.node.sync_once()
+        self.node.report()
+        self.node.sync_once()
+        snap = self.node.snapshot()
+        self.assertEqual(1, len(snap['receipts']))
+        self.assertEqual(message['id'], snap['receipts'][0]['message'])
+
 
 class RollupTests(NodeTests):
     """Cross-room smart-views rollup: per-room 'rollup' plus top-level
@@ -752,3 +804,76 @@ class RollupTests(NodeTests):
         general = self.room(snap, 'general')
         self.assertEqual('blocked', general['rollup']['state'])
         self.assertEqual(2, general['rollup']['needs'])  # 1 pending request (general) + 1 blocked binding
+
+
+class DeviceSchemaTests(unittest.TestCase):
+    """Regression for H4: the additive requests.model/requests.room migration
+    ran without ever bumping user_version past 1, so rolling back to the old
+    (pre-migration) helper opened a migrated profile without complaint and
+    then every request_create() failed on a column-count mismatch. The
+    version must land on 2, and both a fresh device and a reopened,
+    already-migrated one must land there too, without error."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def close(self, node):
+        node.stop.set()
+        node.db.close()
+        node.delivery.db.close()
+        if node.hub:
+            node.hub.db.close()
+
+    def test_fresh_device_lands_on_version_2_and_reopen_is_idempotent(self):
+        home = Path(self.tmp.name)/'A'
+        node = Node(home, MemoryVault(), allow_loopback=True)
+        try:
+            self.assertEqual(2, node.db.execute('PRAGMA user_version').fetchone()[0])
+            columns = [r[1] for r in node.db.execute('PRAGMA table_info(requests)')]
+            self.assertIn('model', columns)
+            self.assertIn('room', columns)
+        finally:
+            self.close(node)
+        reopened = Node(home, MemoryVault(), allow_loopback=True)
+        try:
+            self.assertEqual(2, reopened.db.execute('PRAGMA user_version').fetchone()[0])
+        finally:
+            self.close(reopened)
+
+    def test_old_pre_migration_profile_upgrades_cleanly_to_version_2(self):
+        home = Path(self.tmp.name)/'B'
+        home.mkdir(parents=True)
+        seed = sqlite3.connect(str(home/'device.sqlite3'))
+        seed.executescript('''
+        CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE outbox(id TEXT PRIMARY KEY, event TEXT, state TEXT, error TEXT);
+        CREATE TABLE cache(seq INTEGER PRIMARY KEY, id TEXT UNIQUE, event TEXT);
+        CREATE TABLE bindings(id TEXT PRIMARY KEY, data TEXT, paused INTEGER DEFAULT 0);
+        CREATE TABLE offered(binding TEXT PRIMARY KEY, seq INTEGER DEFAULT 0, cursor INTEGER DEFAULT 0);
+        CREATE TABLE reports(id TEXT PRIMARY KEY, state TEXT);
+        CREATE TABLE requests(native TEXT, app TEXT, title TEXT, directory TEXT,
+          requested REAL, state TEXT, PRIMARY KEY(native, app));
+        PRAGMA user_version=1;
+        ''')
+        seed.commit()
+        seed.close()
+        node = Node(home, MemoryVault(), allow_loopback=True)
+        try:
+            self.assertEqual(2, node.db.execute('PRAGMA user_version').fetchone()[0])
+            columns = [r[1] for r in node.db.execute('PRAGMA table_info(requests)')]
+            self.assertIn('model', columns)
+            self.assertIn('room', columns)
+        finally:
+            self.close(node)
+
+    def test_future_device_schema_is_refused(self):
+        home = Path(self.tmp.name)/'C'
+        home.mkdir(parents=True)
+        seed = sqlite3.connect(str(home/'device.sqlite3'))
+        seed.execute('PRAGMA user_version=99')
+        seed.close()
+        with self.assertRaises(ValueError):
+            Node(home, MemoryVault(), allow_loopback=True)

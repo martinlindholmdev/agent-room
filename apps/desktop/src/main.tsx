@@ -648,16 +648,7 @@ function App() {
             {s.activeRoom === r.id && <span className="room-dot" />}
           </button>
         ))}
-        <button
-          className="nav"
-          onClick={safe(async () => {
-            const title = window.prompt("Name this room")?.trim();
-            if (!title) return;
-            await act("room-create", { title }, false);
-            setView("room");
-            setQuery("");
-          })}
-        >
+        <button className="nav" onClick={() => setDialog("new-room")}>
           <Plus size={17} />
           New room
         </button>
@@ -967,15 +958,16 @@ function App() {
                       </button>
                       <button
                         className="text-button"
-                        onClick={safe(() => {
-                          if (
-                            !window.confirm(
-                              `Remove the connection to "${p.title}"? The session is disconnected; reconnecting later creates a new one.`,
-                            )
-                          )
-                            return Promise.resolve();
-                          return act("binding-remove", { binding: p.id }, false);
-                        })}
+                        onClick={() => {
+                          setEditing({
+                            id: p.id,
+                            kind: "connection",
+                            version: 1,
+                            author: "",
+                            data: p,
+                          });
+                          setDialog("remove-connection");
+                        }}
                       >
                         Remove
                       </button>
@@ -2147,6 +2139,33 @@ function App() {
           </button>
         </Dialog>
       )}
+      {dialog === "new-room" && (
+        <Dialog title="Name this room" onClose={() => setDialog("")}>
+          <form
+            onSubmit={formSubmit(async (d) => {
+              const title = String(d.get("title") || "").trim();
+              if (!title) return;
+              await act("room-create", { title });
+              setView("room");
+              setQuery("");
+            })}
+          >
+            <label>
+              Room name
+              <input
+                name="title"
+                required
+                maxLength={80}
+                placeholder="Room name"
+                autoFocus
+              />
+            </label>
+            <button className="primary wide" disabled={busy}>
+              Create room <ArrowUpRight size={16} />
+            </button>
+          </form>
+        </Dialog>
+      )}
       {dialog === "connect" && (
         <Dialog
           title="Connect an existing conversation"
@@ -2296,6 +2315,28 @@ function App() {
           </p>
           <button className="primary wide" onClick={() => setDialog("")}>
             Done
+          </button>
+        </Dialog>
+      )}
+      {dialog === "remove-connection" && editing && (
+        <Dialog title="Remove connection" onClose={() => setDialog("")}>
+          <p>
+            Remove the connection to “{editing.data.title}”? The session is
+            disconnected; reconnecting later creates a new one.
+          </p>
+          <button
+            className="primary wide"
+            disabled={busy}
+            onClick={safe(() => act("binding-remove", { binding: editing.id }))}
+          >
+            Remove connection
+          </button>
+          <button
+            type="button"
+            className="secondary wide"
+            onClick={() => setDialog("")}
+          >
+            Cancel
           </button>
         </Dialog>
       )}

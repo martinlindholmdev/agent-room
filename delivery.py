@@ -90,6 +90,12 @@ class Delivery:
             self.db.execute('DELETE FROM sessions WHERE id=? AND channel=?', (session, channel))
             self.db.execute('DELETE FROM deliveries WHERE session=? AND channel=?', (session, channel))
 
+    def discard(self, delivery_id):
+        """Remove a single delivery row outright, e.g. an orphan left behind
+        by a route() that landed for a session with no binding any more."""
+        with self.lock, self.db:
+            self.db.execute('DELETE FROM deliveries WHERE id=?', (delivery_id,))
+
     def targets(self, msg):
         """Snapshot at post time. Legacy names never authorize a task prompt."""
         candidates = self.sessions(msg['channel'])

@@ -85,7 +85,10 @@ class Node(Database):
         self.root, self.vault = Path(root).resolve(), vault
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         super().__init__(str(self.root/'device.sqlite3'))
-        require(self.db.execute('PRAGMA user_version').fetchone()[0] in (0, 1), 'device schema newer than app')
+        # Version 1 is the original single-room schema; version 2 additionally
+        # has requests.model/requests.room (multi-room support). A device
+        # schema newer than either is refused rather than silently misread.
+        require(self.db.execute('PRAGMA user_version').fetchone()[0] in (0, 1, 2), 'device schema newer than app')
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
         CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, event TEXT, state TEXT, error TEXT);
@@ -95,14 +98,19 @@ class Node(Database):
         CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, state TEXT);
         CREATE TABLE IF NOT EXISTS requests(native TEXT, app TEXT, title TEXT, directory TEXT,
           requested REAL, state TEXT, PRIMARY KEY(native, app));
-        PRAGMA user_version=1;
         ''')
+        # Each ALTER is independently guarded, and the version bump only
+        # happens after both have landed (or were already there), so calling
+        # setup twice -- or opening a device profile already migrated to
+        # version 2 -- is always safe and always ends at the same version.
+        # An old (pre-migration) helper opening this profile sees version 2,
+        # refuses via the require() above, and never mis-inserts against the
+        # old 6-column requests table.
         if 'model' not in [r[1] for r in self.db.execute('PRAGMA table_info(requests)')]:
             self.db.execute("ALTER TABLE requests ADD COLUMN model TEXT DEFAULT ''")
-            self.db.commit()
         if 'room' not in [r[1] for r in self.db.execute('PRAGMA table_info(requests)')]:
             self.db.execute("ALTER TABLE requests ADD COLUMN room TEXT DEFAULT 'general'")
-            self.db.commit()
+        self.db.execute('PRAGMA user_version=2')
         self.db.execute("UPDATE outbox SET state='saved' WHERE state='sending'")
         self.db.commit()
         self.hub = None
@@ -220,6 +228,13 @@ class Node(Database):
         if app == 'opencode-bridge':
             require(directory and Path(directory).is_absolute() and Path(directory).is_dir(), 'OpenCode requires its exact existing local directory')
         existing = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        # The same native+app pair may only ever be bound into one room at a
+        # time. Without this, the manual Connect dialog can bind an
+        # already-bound session into a second room (a second hub session,
+        # UNIQUE only on device+room+app+native), after which mcp.py's
+        # resolve_binding sees two matches for the same identity and locks
+        # the helper out entirely.
+        require(not existing or existing['room'] == room, 'session already connected in another room; remove it first')
         model = (data.get('model') or (existing.get('model', '') if existing else '')).strip()
         binding = self.call('bind', {'native': native, 'app': app, 'title': data['title'], 'room': room, 'generation': existing['generation'] if existing else 1})
         if app == 'opencode-bridge':
@@ -289,13 +304,19 @@ class Node(Database):
             self.call('session-remove', {'session': identity, 'room': binding['room']})
         except Exception:
             pass  # Best-effort: the local disconnect must still succeed even offline.
-        delivery_ids = [r['id'] for r in self.delivery.status(binding['room']) if r['session'] == identity]
+        # Hold self.lock across the local delete AND delivery.forget, and take
+        # it around route_cache's own bindings snapshot + route() calls too
+        # (see route_cache). Otherwise a route_cache pass reading a stale
+        # bindings dict just before this delete can land its delivery.route()
+        # insert just after forget() ran, leaving an orphan delivery row that
+        # report() would have no binding to attribute a receipt to.
         with self.lock, self.db:
+            delivery_ids = [r['id'] for r in self.delivery.status(binding['room']) if r['session'] == identity]
             self.db.execute('DELETE FROM bindings WHERE id=?', (identity,))
             self.db.execute('DELETE FROM offered WHERE binding=?', (identity,))
             if delivery_ids:
                 self.db.executemany('DELETE FROM reports WHERE id=?', [(d,) for d in delivery_ids])
-        self.delivery.forget(identity, binding['room'])
+            self.delivery.forget(identity, binding['room'])
         self.bridge_leases.pop(identity, None)
         self.bridge_seen.pop(identity, None)
         self.work.set()
@@ -416,18 +437,24 @@ class Node(Database):
         self.route_cache()
 
     def route_cache(self):
-        bindings = {b['id']: b for b in self.bindings()}
-        for row in self.rows('SELECT event FROM cache ORDER BY seq'):
-            event = json.loads(row['event'])
-            if event['kind'] != 'message':
-                continue
-            for target in event['body'].get('targets', []):
-                if target not in bindings:
+        # Snapshot bindings and issue every delivery.route() call while
+        # holding self.lock, the same lock binding_remove now holds across
+        # its delete + delivery.forget. Otherwise a binding removed between
+        # this snapshot and a route() call for one of its (now stale) targets
+        # would leave an orphan delivery row with no binding behind it.
+        with self.lock:
+            bindings = {b['id']: b for b in self.bindings()}
+            for row in self.rows('SELECT event FROM cache ORDER BY seq'):
+                event = json.loads(row['event'])
+                if event['kind'] != 'message':
                     continue
-                binding = bindings[target]
-                state = 'unavailable' if binding['app'] in PULL_LIKE else 'pending'
-                self.delivery.route({'id': event['id'], 'channel': binding['room'], 'human': not event['sender'],
-                    'delivery_targets': [{'session': target, 'state': state, 'reason': 'Pull only; open this session to read' if state == 'unavailable' else ''}]})
+                for target in event['body'].get('targets', []):
+                    if target not in bindings:
+                        continue
+                    binding = bindings[target]
+                    state = 'unavailable' if binding['app'] in PULL_LIKE else 'pending'
+                    self.delivery.route({'id': event['id'], 'channel': binding['room'], 'human': not event['sender'],
+                        'delivery_targets': [{'session': target, 'state': state, 'reason': 'Pull only; open this session to read' if state == 'unavailable' else ''}]})
         with self.bridge_condition:
             self.bridge_condition.notify_all()
 
@@ -445,10 +472,23 @@ class Node(Database):
     def report(self):
         # Report on every room a binding lives in, not only the room currently
         # shown in the UI, so a background agent's receipts still reach the hub.
+        bound_ids = {b['id'] for b in self.bindings()}
         for room in {b['room'] for b in self.bindings()}:
             for row in self.delivery.status(room):
                 state = row['state']
                 if state in ('sending', 'relaying'):
+                    continue
+                if row['session'] not in bound_ids:
+                    # Orphaned delivery: its binding is gone (normally
+                    # binding_remove's own delivery.forget already cleans
+                    # these up; this only catches a rare race with
+                    # route_cache, or any other stray reference). There is no
+                    # binding left to attribute a receipt to, so enqueue()
+                    # would raise here on every single cycle, permanently
+                    # knocking this device offline. Discard it instead.
+                    self.delivery.discard(row['id'])
+                    with self.lock, self.db:
+                        self.db.execute('DELETE FROM reports WHERE id=?', (row['id'],))
                     continue
                 previous = self.rows('SELECT state FROM reports WHERE id=?', (row['id'],))
                 if previous and previous[0]['state'] == state:
