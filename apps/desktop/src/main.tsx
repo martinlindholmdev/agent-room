@@ -338,6 +338,28 @@ function Palette({
     </dialog>
   );
 }
+// Signature element: a live status dot + app name + model, in mono.
+// Repeated in the participants panel, message author lines and connection
+// cards so "app + model + state" is the one visual through-line of the app.
+function IdentityChip({
+  label,
+  model,
+  status,
+}: {
+  label: string;
+  model?: string;
+  status?: string;
+}) {
+  return (
+    <span className={"identity-chip status-" + (status || "idle")}>
+      <span className="identity-dot" />
+      <span className="identity-text">
+        {label}
+        {model ? " · " + model : ""}
+      </span>
+    </span>
+  );
+}
 function Dialog({
   title,
   children,
@@ -387,9 +409,13 @@ function App() {
     [editing, setEditing] = useState<ObjectItem | null>(null),
     [runtime, setRuntime] = useState<any>({}),
     [palette, setPalette] = useState(false),
-    [appearance, setAppearance] = useState(
-      localStorage.getItem("appearance") || "system",
-    );
+    [appearance, setAppearance] = useState(() => {
+      try {
+        return localStorage.getItem("appearance") || "system";
+      } catch {
+        return "system";
+      }
+    });
   const search = useRef<HTMLInputElement>(null),
     composer = useRef<HTMLTextAreaElement>(null),
     bottom = useRef<HTMLDivElement>(null);
@@ -427,8 +453,16 @@ function App() {
     return () => document.removeEventListener("keydown", listener);
   }, []);
   useEffect(() => {
-    document.documentElement.dataset.appearance = appearance;
-    localStorage.setItem("appearance", appearance);
+    if (appearance === "system") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", appearance);
+    }
+    try {
+      localStorage.setItem("appearance", appearance);
+    } catch {
+      /* private mode or blocked storage: theme choice just won't persist */
+    }
   }, [appearance]);
   useEffect(() => {
     if (s.events.length > previous.current && !query) {
@@ -860,9 +894,14 @@ function App() {
                       <Terminal size={18} />
                       <div>
                         <strong>{p.title}</strong>
-                        <small>
-                          {appLabel(p.app, p.model)} · {p.native}
-                        </small>
+                        <div className="binding-meta">
+                          <IdentityChip
+                            label={appName(p.app)}
+                            model={p.model}
+                            status={p.state}
+                          />
+                          <small className="mono">{p.native}</small>
+                        </div>
                         <small>
                           {p.app === "codex-queue"
                             ? "Configured for next-turn delivery; check receipts"
@@ -1138,11 +1177,11 @@ function App() {
                         <div>
                           <strong>{r.title}</strong>
                           <p>
-                            {appLabel(r.app, r.model)} wants to join this room.
-                            Approving connects its exact session; nothing is
-                            routed until then.
+                            <IdentityChip label={appName(r.app)} model={r.model} />{" "}
+                            wants to join this room. Approving connects its
+                            exact session; nothing is routed until then.
                           </p>
-                          <small>{r.native}</small>
+                          <small className="mono">{r.native}</small>
                         </div>
                         <span className="request-actions">
                           <button
@@ -1492,9 +1531,15 @@ function App() {
                               <div className="message-meta">
                                 <strong>{author(event)}</strong>
                                 {participant && (
-                                  <span className="app-badge">
-                                    {appName(participant.app)}
-                                  </span>
+                                  <IdentityChip
+                                    label={appName(participant.app)}
+                                    model={participant.model}
+                                    status={
+                                      s.bindings.find(
+                                        (b) => b.id === participant.id,
+                                      )?.state
+                                    }
+                                  />
                                 )}
                                 <time
                                   title={new Date(
@@ -1775,28 +1820,15 @@ function App() {
                         <Terminal size={14} />
                       </div>
                       <div>
-                        <strong>
-                          {p.title}{" "}
-                          <span
-                            className={
-                              "presence-dot presence-" +
-                              (s.bindings.find((b) => b.id === p.id)?.state ||
-                                "idle")
-                            }
-                            title={presenceLabel(
-                              s.bindings.find((b) => b.id === p.id)?.state,
-                            )}
-                          >
-                            ●
-                          </span>
-                        </strong>
-                        <small>
-                          {appLabel(
-                            p.app,
-                            s.bindings.find((b) => b.id === p.id)?.model,
-                          )}{" "}
-                          · {p.device_name}
-                        </small>
+                        <strong title={presenceLabel(
+                          s.bindings.find((b) => b.id === p.id)?.state,
+                        )}>{p.title}</strong>
+                        <IdentityChip
+                          label={appName(p.app)}
+                          model={s.bindings.find((b) => b.id === p.id)?.model}
+                          status={s.bindings.find((b) => b.id === p.id)?.state}
+                        />
+                        <small>{p.device_name}</small>
                         <span className="participant-status">
                           {p.app === "codex-queue"
                             ? "Next-turn delivery"
@@ -2050,11 +2082,12 @@ function App() {
           </p>
           <label>
             Invitation ID
-            <input readOnly value={pair?.id || ""} />
+            <input className="mono" readOnly value={pair?.id || ""} />
           </label>
           <label>
             Single-use proof
             <input
+              className="mono"
               readOnly
               type="password"
               value={pair?.proof || ""}
@@ -2182,11 +2215,11 @@ function App() {
           </p>
           <label>
             Native conversation
-            <input value={editing.data.native} readOnly />
+            <input className="mono" value={editing.data.native} readOnly />
           </label>
           <label>
             Desktop room binding
-            <input value={editing.id} readOnly />
+            <input className="mono" value={editing.id} readOnly />
           </label>
           {editing.data.app === "opencode-bridge" ? (
             <p className="small">
