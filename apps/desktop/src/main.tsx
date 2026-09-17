@@ -1428,13 +1428,7 @@ function App() {
             ) : (
               <>
                 <div className="room-heading">
-                  <div>
-                    <div className="eyebrow">SHARED ROOM</div>
-                    <h1>
-                      General<span className="subtle-hash">#</span>
-                    </h1>
-                    <p>Messages, plans and reviews.</p>
-                  </div>
+                  <div />
                   <button
                     className="secondary"
                     onClick={() => setDialog("connect")}
