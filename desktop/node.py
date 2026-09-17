@@ -448,7 +448,17 @@ class Node(Database):
                 event = json.loads(row['event'])
                 if event['kind'] != 'message':
                     continue
-                for target in event['body'].get('targets', []):
+                targets = event['body'].get('targets', [])
+                if not targets:
+                    # Board post: no explicit recipient, but resident room members
+                    # (push connectors keyed off deliveries -- codex-queue,
+                    # opencode-bridge, claude-channel -- plus Monitor/watch-next)
+                    # must still see it. Fan out to every other bound session in
+                    # this room. (wait-next needs no such fan-out: it reads the
+                    # cache directly by seq, and this event is already there.)
+                    targets = [identity for identity, binding in bindings.items()
+                               if binding['room'] == event['room'] and identity != event['sender']]
+                for target in targets:
                     if target not in bindings:
                         continue
                     binding = bindings[target]
@@ -590,6 +600,42 @@ class Node(Database):
         self.delivery.finish(delivery_id, state, 'Native app accepted; awaiting explicit receipt' if state == 'submitted' else 'Native send not confirmed; no automatic retry')
         self.work.set()
         return {'state': state}
+
+    def wait_next(self, identity, native, generation, timeout=20):
+        """Generic resident-wake primitive for any app, including 'pull'/'mcp'
+        sessions that have no push connector at all. Blocks until there is a
+        cache message in this binding's room that this binding has not yet
+        been offered and did not itself send, or until timeout elapses.
+
+        Cache-seq based, not delivery-based: a board post (targets=[]) and a
+        human post both land in `cache` and bump the room's cursor the same
+        way a targeted post does, so both wake this call; this binding's own
+        posts never do (sender==identity is excluded). This mirrors
+        bridge_next's own lock discipline exactly -- only quick self.lock-held
+        reads (self.binding()/self.rows()) between waits, and the wait itself
+        is on the already-independent bridge_condition, which route_cache
+        notifies after every receive(). No new lock is introduced, so this
+        cannot deadlock against send_loop/stream_loop/dispatch_loop."""
+        deadline = time.monotonic()+min(20, max(0, timeout))
+        while True:
+            binding = self.binding(identity)
+            require(binding['native'] == native and binding['generation'] == generation,
+                    'wait requires exact active identity and generation')
+            room = binding['room']
+            offered = self.rows('SELECT * FROM offered WHERE binding=?', (identity,))
+            baseline = max(offered[0]['seq'], offered[0]['cursor']) if offered else 0
+            seq = 0
+            for row in self.rows('SELECT event FROM cache WHERE seq>? ORDER BY seq DESC', (baseline,)):
+                event = json.loads(row['event'])
+                if event['kind'] == 'message' and event.get('room') == room and event['sender'] != identity:
+                    seq = event['seq']
+                    break
+            if seq:
+                return {'ready': True, 'seq': seq}
+            if not self.online or self.get('paused', False) or binding.get('paused', False) or self.stop.is_set() or time.monotonic() >= deadline:
+                return {'ready': False, 'seq': baseline}
+            with self.bridge_condition:
+                self.bridge_condition.wait(min(1, deadline-time.monotonic()))
 
     def tool(self, identity, name, args):
         binding = self.binding(identity)
@@ -767,6 +813,8 @@ class Node(Database):
                     oldest = min(oldest or event[0]['seq'], event[0]['seq'])
                     latest = max(latest, event[0]['seq'])
             return {'oldest': oldest, 'latest': latest}
+        if action == 'wait-next':
+            return self.wait_next(data['binding'], data.get('native'), data.get('generation'), data.get('timeout', 20))
         if action == 'tool':
             binding=self.binding(data['binding'])
             require(data.get('native')==binding['native'] and data.get('generation')==binding['generation'], 'native identity or connector generation changed')

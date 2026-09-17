@@ -436,6 +436,83 @@ class NodeTests(unittest.TestCase):
         self.node.save_binding(newer)
         with self.assertRaises(ValueError):self.node.control('watch-next', watcher)
 
+    def test_wait_next_wakes_on_board_post_but_never_on_own_post(self):
+        mine = self.bind('mcp')
+        other = self.bind('mcp')
+        watcher = {'binding': mine['id'], 'native': mine['native'], 'generation': mine['generation'], 'timeout': 0}
+        self.assertEqual({'ready': False, 'seq': 0}, self.node.control('wait-next', watcher))
+        # A board post (targets=[]) from another agent must wake wait-next even
+        # though nothing addressed `mine` directly.
+        self.node.tool(other['id'], 'room_post', {'text': 'Board question for anyone'})
+        self.node.sync_once()
+        status = self.node.control('wait-next', watcher)
+        self.assertTrue(status['ready'])
+        self.assertGreater(status['seq'], 0)
+        # Reading and acknowledging through that seq resets readiness.
+        page = self.node.control('tool', dict(watcher, name='room_read', args={}))
+        self.node.control('tool', dict(watcher, name='room_ack', args={'read_through': page['read_through']}))
+        self.assertEqual({'ready': False, 'seq': page['read_through']}, self.node.control('wait-next', watcher))
+        # This binding's own post never wakes its own wait-next.
+        self.node.tool(mine['id'], 'room_post', {'text': 'My own board post'})
+        self.node.sync_once()
+        mine_status = self.node.control('wait-next', watcher)
+        self.assertFalse(mine_status['ready'])
+        # ...but it does wake the other bound session, which did not send it.
+        other_watcher = {'binding': other['id'], 'native': other['native'], 'generation': other['generation'], 'timeout': 0}
+        self.assertTrue(self.node.control('wait-next', other_watcher)['ready'])
+
+    def test_wait_next_wakes_on_targeted_and_human_message_and_times_out_cleanly(self):
+        binding = self.bind('mcp')
+        watcher = {'binding': binding['id'], 'native': binding['native'], 'generation': binding['generation']}
+        started = time.monotonic()
+        self.assertEqual({'ready': False, 'seq': 0}, self.node.control('wait-next', dict(watcher, timeout=0.2)))
+        self.assertGreaterEqual(time.monotonic() - started, 0.15)
+        self.node.enqueue('message', {'text': 'Human message, no sender', 'targets': []})
+        self.node.sync_once()
+        self.assertTrue(self.node.control('wait-next', dict(watcher, timeout=0))['ready'])
+        with self.assertRaises(ValueError):
+            self.node.control('wait-next', dict(watcher, timeout=0, generation=binding['generation'] + 1))
+
+    def test_wait_next_woken_promptly_by_bridge_condition_notify(self):
+        """A blocking wait-next call must be released as soon as route_cache
+        notifies bridge_condition -- not only when its own poll loop happens
+        to re-check -- so a resident loop is not left to sleep out its full
+        hop even though route_cache already ran."""
+        binding = self.bind('mcp')
+        other = self.bind('mcp')
+        watcher = {'binding': binding['id'], 'native': binding['native'], 'generation': binding['generation'], 'timeout': 15}
+        result = {}
+        def waiter():
+            result['status'] = self.node.control('wait-next', watcher)
+        thread = threading.Thread(target=waiter)
+        started = time.monotonic()
+        thread.start()
+        time.sleep(0.2)  # let the waiter block on bridge_condition
+        self.node.tool(other['id'], 'room_post', {'text': 'Wake up'})
+        self.node.sync_once()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 5, 'wait-next should wake immediately on notify, not sleep out the full hop')
+        self.assertTrue(result['status']['ready'])
+
+    def test_board_post_fans_out_delivery_rows_to_room_members_not_sender(self):
+        sender = self.bind('mcp')
+        codex_recipient = self.bind('codex-queue')
+        pull_recipient = self.bind('pull')
+        self.node.tool(sender['id'], 'room_post', {'text': 'Board post fixture'})
+        self.node.sync_once()
+        rows = self.node.delivery.status('general')
+        sessions = {row['session']: row['state'] for row in rows}
+        self.assertNotIn(sender['id'], sessions)
+        self.assertEqual('pending', sessions[codex_recipient['id']])
+        self.assertEqual('unavailable', sessions[pull_recipient['id']])
+        # Targeted delivery is unaffected: only the addressed session gets a row.
+        self.node.tool(sender['id'], 'room_post', {'text': 'Targeted fixture', 'to_session': codex_recipient['id']})
+        self.node.sync_once()
+        targeted = [r for r in self.node.delivery.status('general') if r['message'] not in {row['message'] for row in rows}]
+        self.assertEqual([codex_recipient['id']], [r['session'] for r in targeted])
+
     def test_real_http_protocol_scope_pair_two_synthetic_devices(self):
         server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.node,'not-used',True))
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()

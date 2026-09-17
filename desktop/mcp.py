@@ -11,11 +11,15 @@ import time
 from desktop_main import local_call
 
 TOOLS = [
-    ('room_read', 'Read oldest complete unread page. Does not acknowledge.', {}),
+    ('room_read', 'Read oldest complete unread page. Does not acknowledge. Prefer room_wait to block for the next page instead of polling.', {}),
     ('room_sessions', 'List exact registered sessions for routing.', {}),
     ('room_context', 'Read current plans, work, decisions and review packets with provenance.', {}),
-    ('room_post', 'Post to this desktop room. Address an exact to_session to wake a recipient. Include reply_to for a reply.',
+    ('room_post', 'Post to this desktop room. Address an exact to_session to reply privately to one recipient; omit it to post to the room instead (a board post), which every resident room_wait call also sees. Include reply_to for a reply.',
      {'text': {'type': 'string'}, 'to_session': {'type': 'string'}, 'reply_to': {'type': 'string'}, 'request_id': {'type': 'string'}}),
+    ('room_wait', 'Block until the next message in this room that was not written by you arrives, or until timeout_seconds elapses (default 600, max 1800). '
+     'On new content, returns the same page room_read returns, plus reply instructions. On timeout, returns an empty page with a note; call room_wait again to stay resident. '
+     'This is the generic wake primitive: works for every MCP client, needs no push and no per-framework glue, and never fires on your own posts.',
+     {'timeout_seconds': {'type': 'integer', 'minimum': 5, 'maximum': 1800}}),
     ('room_ack', 'Explicitly confirm complete messages you have actually read. Never infer receipt from API success.',
      {'delivery_ids': {'type': 'array', 'items': {'type': 'string'}}, 'read_through': {'type': 'integer'}}),
     ('room_workflow', 'Create/update a versioned plan, work request, decision, review or advisory claim. Current version + 1 required. Review revisions invalidate approval.',
@@ -23,6 +27,10 @@ TOOLS = [
     ('room_status', 'Self-report this exact session\'s presence state to the room (working/idle/blocked/done). Explicit self-report only; this is never inferred or scraped from activity.',
      {'state': {'type': 'string', 'enum': ['working', 'idle', 'blocked', 'done']}}),
 ]
+RESIDENT_PROTOCOL = ('Resident protocol: after connecting, loop forever -- call room_wait(timeout_seconds=600) to block for the next message; '
+    'for every returned message not from you, call room_ack(delivery_ids=[...] and/or read_through=<read_through>) for what you read, '
+    'then answer with room_post(text=..., reply_to=<its id>, to_session=<its from_session>) or, for a board question, room_post without to_session; '
+    'then call room_wait again. Never end your turn to wait for a person; an empty room_wait result is normal -- just call it again. ')
 MONITOR_TOOL = ('room_monitor_setup',
     'Prepare a private trigger-only feed for the native Claude app Monitor tool. '
     'Start the returned command with Monitor in this same app conversation under normal host permissions. '
@@ -141,6 +149,23 @@ def run(root, identity, claude_channel=False, claude_app=False, generic=False, n
         if binding is None:
             raise ValueError('This session is not connected to the Agent Room yet. Call room_connect to request admission; the person approves it in the app.')
         return local_call(root, 'tool', {'binding': identity,'native':native,'generation':generation,'lease':lease.get('value'),'name': name, 'args': args})
+    def wait(timeout_seconds):
+        if binding is None:
+            raise ValueError('This session is not connected to the Agent Room yet. Call room_connect to request admission; the person approves it in the app.')
+        clamped = min(1800, max(5, int(timeout_seconds or 600)))
+        deadline = time.monotonic()+clamped
+        while True:
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                return {'messages': [], 'note': 'No new messages within %d seconds. Call room_wait again to stay resident.' % clamped}
+            # Each hop is a `wait-next` control call capped at 20s server-side,
+            # well under local_call's own 30s HTTP timeout; one room_wait tool
+            # call can still block for up to timeout_seconds by looping hops.
+            result = local_call(root, 'wait-next', {'binding': identity, 'native': native, 'generation': generation, 'timeout': min(20, remaining)})
+            if result.get('ready'):
+                page = call('room_read', {})
+                page['instructions'] = RESIDENT_PROTOCOL
+                return page
     def channel():
         while not stopped.is_set():
             try:
@@ -186,8 +211,8 @@ def run(root, identity, claude_channel=False, claude_app=False, generic=False, n
                 result = {'protocolVersion': request.get('params', {}).get('protocolVersion', '2025-06-18'), 'capabilities': capabilities,
                           'serverInfo': {'name': 'agent-room-desktop', 'version': '0.1.0'},
                           'instructions': ('This exact session is not connected to the Agent Room yet. Call room_connect (with a short title describing this conversation) to request admission; the person approves it in the Agent Room app. After approval the room tools work in this same session without any reconnect. ' if pending else 'You are bound to exact desktop session '+identity+'. ')+
-                          ('Claude app: call room_read to check messages during a turn. Optional room_monitor_setup prepares a private trigger command for the native app Monitor tool; start it under normal host permissions in this same conversation and renew after its deadline notice. Setup alone cannot prove idle wake. ' if claude_app and not pending else '')+
-                          ('Generic MCP: call room_read to check messages during a turn. This connector is read-on-demand only; there is no push and no idle-wake. ' if generic and not pending else '')+
+                          ('Claude app: optional room_monitor_setup prepares a private trigger command for the native app Monitor tool, which wakes this session without holding a turn; start it under normal host permissions in this same conversation and renew after its deadline notice. Setup alone cannot prove idle wake; room_wait below works regardless. ' if claude_app and not pending else '')+
+                          (RESIDENT_PROTOCOL if not pending else '')+
                           'Only explicit room_ack acknowledges fully read content. Native delivery and work completion are separate.'}
             elif method == 'tools/list':
                 exposed = TOOLS + ([MONITOR_TOOL, MONITOR_STATUS] if claude_app else []) + [CONNECT_TOOL]
@@ -227,6 +252,8 @@ def run(root, identity, claude_channel=False, claude_app=False, generic=False, n
                         value = monitor_feed.status() if monitor_feed is not None else {
                             'connected': False, 'seconds_remaining': 0,
                             'note': 'No native Monitor socket is connected in this MCP process; this is not receiver receipt.'}
+                elif params['name'] == 'room_wait':
+                    value = wait((params.get('arguments') or {}).get('timeout_seconds', 600))
                 else:
                     value = call(params['name'], params.get('arguments', {}))
                 result = {'content': [{'type': 'text', 'text': json.dumps(value, ensure_ascii=False)}]}

@@ -86,6 +86,88 @@ class HostIdentityTests(unittest.TestCase):
         self.assertIn('room_read',tool_names)
         self.assertEqual({'messages':[], 'read_through':0},json.loads(replies[2]['result']['content'][0]['text']))
 
+    def test_generic_mcp_exposes_room_wait_and_resident_protocol_instructions(self):
+        binding = dict(next(b for b in self.bindings if b['id'] == 'e'), generation=1)
+        def local(_root, action, data):
+            if action == 'snapshot':
+                return {'bindings': [binding]}
+            self.fail('tools/list issued unexpected local action: '+action)
+        requests = [json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})+'\n',
+                    json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'})+'\n']
+        with patch.dict(os.environ, {'AGENT_ROOM_NATIVE': 'agent-x'}, clear=True), \
+             patch('desktop.mcp.local_call', side_effect=local), \
+             patch('desktop.mcp.sys.stdin', requests), \
+             patch('desktop.mcp.sys.stdout', new_callable=io.StringIO) as output:
+            run('unused', None, generic=True)
+        replies = [json.loads(line) for line in output.getvalue().splitlines()]
+        instructions = replies[0]['result']['instructions']
+        self.assertIn('room_wait', instructions)
+        self.assertIn('Resident protocol', instructions)
+        self.assertNotIn('there is no push and no idle-wake', instructions)
+        tool_names = [tool['name'] for tool in replies[1]['result']['tools']]
+        self.assertIn('room_wait', tool_names)
+
+    def test_room_wait_polls_wait_next_hops_until_ready_then_returns_room_read_page(self):
+        binding = dict(next(b for b in self.bindings if b['id'] == 'e'), generation=1)
+        clock = {'t': 0.0}
+        wait_calls = {'n': 0}
+        calls = []
+        def local(_root, action, data):
+            calls.append((action, data))
+            if action == 'snapshot':
+                return {'bindings': [binding]}
+            if action == 'wait-next':
+                self.assertEqual(binding['id'], data['binding'])
+                self.assertEqual(binding['native'], data['native'])
+                self.assertLessEqual(data['timeout'], 20)
+                wait_calls['n'] += 1
+                clock['t'] += data['timeout']
+                return {'ready': wait_calls['n'] >= 2, 'seq': 5}
+            if action == 'tool':
+                self.assertEqual('room_read', data['name'])
+                self.assertIsNone(data['lease'])
+                return {'messages': [{'id': 'm1'}], 'read_through': 5, 'deliveries': []}
+            self.fail('room_wait issued unexpected local action: '+action)
+        requests = [json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})+'\n',
+                    json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                                'params': {'name': 'room_wait', 'arguments': {'timeout_seconds': 600}}})+'\n']
+        with patch.dict(os.environ, {'AGENT_ROOM_NATIVE': 'agent-x'}, clear=True), \
+             patch('desktop.mcp.local_call', side_effect=local), \
+             patch('desktop.mcp.time.monotonic', side_effect=lambda: clock['t']), \
+             patch('desktop.mcp.sys.stdin', requests), \
+             patch('desktop.mcp.sys.stdout', new_callable=io.StringIO) as output:
+            run('unused', None, generic=True)
+        replies = [json.loads(line) for line in output.getvalue().splitlines()]
+        value = json.loads(replies[1]['result']['content'][0]['text'])
+        self.assertEqual([{'id': 'm1'}], value['messages'])
+        self.assertEqual(5, value['read_through'])
+        self.assertIn('room_wait', value['instructions'])
+        self.assertEqual(2, wait_calls['n'])
+
+    def test_room_wait_times_out_cleanly_with_no_new_content(self):
+        binding = dict(next(b for b in self.bindings if b['id'] == 'e'), generation=1)
+        clock = {'t': 0.0}
+        def local(_root, action, data):
+            if action == 'snapshot':
+                return {'bindings': [binding]}
+            if action == 'wait-next':
+                clock['t'] += data['timeout']
+                return {'ready': False, 'seq': 0}
+            self.fail('room_wait issued unexpected local action on timeout path: '+action)
+        requests = [json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {}})+'\n',
+                    json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                                'params': {'name': 'room_wait', 'arguments': {'timeout_seconds': 5}}})+'\n']
+        with patch.dict(os.environ, {'AGENT_ROOM_NATIVE': 'agent-x'}, clear=True), \
+             patch('desktop.mcp.local_call', side_effect=local), \
+             patch('desktop.mcp.time.monotonic', side_effect=lambda: clock['t']), \
+             patch('desktop.mcp.sys.stdin', requests), \
+             patch('desktop.mcp.sys.stdout', new_callable=io.StringIO) as output:
+            run('unused', None, generic=True)
+        replies = [json.loads(line) for line in output.getvalue().splitlines()]
+        value = json.loads(replies[1]['result']['content'][0]['text'])
+        self.assertEqual([], value['messages'])
+        self.assertIn('room_wait again', value['note'])
+
     def test_claude_app_mcp_has_ordinary_tools_without_channel_bridge(self):
         binding=dict(self.bindings[-1], generation=3)
         calls=[]
