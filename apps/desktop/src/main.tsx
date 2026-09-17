@@ -1765,7 +1765,7 @@ function App() {
                         target ? "Message this agent…" : "Message the room…"
                       }
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
                           void send().catch(() => {});
                         }
@@ -1792,7 +1792,7 @@ function App() {
                       Saved locally before sending. Receipts show when an agent
                       has read it.
                     </span>
-                    <span>⌘ ↵ to send</span>
+                    <span>↵ to send · ⇧↵ line break</span>
                   </div>
                 </div>
               </>
