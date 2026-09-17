@@ -275,10 +275,8 @@ code {
   transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
 }
 .nav.selected {
-  background: var(--surface-2);
+  background: var(--hover);
   color: var(--text);
-  font-weight: 550;
-  box-shadow: inset 2px 0 0 var(--accent);
 }
 .nav:hover,
 .icon:hover {
