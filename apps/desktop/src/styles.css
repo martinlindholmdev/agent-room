@@ -349,6 +349,16 @@ code {
 .pinned-view:hover {
   opacity: 1;
 }
+/* "Active" is a plain rollup counter, not a control: no click target, so it
+   must not pick up the interactive hover/cursor affordance shared .nav
+   buttons get. */
+.pinned-view.static {
+  cursor: default;
+}
+.pinned-view.static:hover {
+  opacity: 0.85;
+  background: transparent;
+}
 .sidebar-note {
   padding: 39px 13px;
   font-size: 11px;

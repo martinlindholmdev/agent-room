@@ -40,6 +40,7 @@ type Session = {
   bridge_connected?: boolean;
   model?: string;
   state?: string;
+  room?: string;
 };
 type Event = {
   id: string;
@@ -92,6 +93,7 @@ type Snapshot = {
     requested: number;
     state: string;
     model?: string;
+    room?: string;
   }[];
   needsYou?: number;
   activeCount?: number;
@@ -509,6 +511,25 @@ function App() {
       o.data.state !== "resolved" &&
       o.data.state !== "cancelled",
   );
+  // Single source of truth for "needs you" so the pinned sidebar count and
+  // the Inbox heading it navigates to always agree: requests waiting on a
+  // decision, receipts stuck undelivered, and sends that failed outright.
+  const stuckReceipts = s.receipts.filter((r) => {
+    const target = session(r.target);
+    const binding = s.bindings.find((b) => b.id === r.target);
+    return (
+      ["unavailable", "uncertain"].includes(r.state) ||
+      (r.state === "pending" &&
+        target &&
+        target.device === s.device &&
+        !["pull", "mcp", "codex-queue"].includes(target.app) &&
+        !(binding?.bridge_connected ?? false))
+    );
+  });
+  const needsYouCount =
+    (s.requests?.length || 0) +
+    stuckReceipts.length +
+    s.outbox.filter((o) => o.state === "failed").length;
   const unacknowledged = s.events.filter(
     (e) =>
       e.kind === "message" &&
@@ -608,17 +629,20 @@ function App() {
             >
               <Circle size={17} />
               Needs you
-              {(s.needsYou || 0) > 0 && (
-                <span className="count">{s.needsYou}</span>
+              {needsYouCount > 0 && (
+                <span className="count">{needsYouCount}</span>
               )}
             </button>
-            <button className="nav pinned-view" onClick={() => {}}>
+            <div
+              className="nav pinned-view static"
+              title="Bindings currently self-reporting as working, across all your rooms on this Mac"
+            >
               <Play size={17} />
               Active
               {(s.activeCount || 0) > 0 && (
                 <span className="count">{s.activeCount}</span>
               )}
-            </button>
+            </div>
           </>
         )}
         <div className="nav-label">YOUR ROOMS</div>
@@ -930,6 +954,9 @@ function App() {
                             status={p.state}
                           />
                           <small className="mono">{p.native}</small>
+                          <small title="Bound room">
+                            #{roomName(s.rooms, p.room || s.activeRoom)}
+                          </small>
                         </div>
                         <small>
                           {p.app === "codex-queue"
@@ -1208,8 +1235,10 @@ function App() {
                           <strong>{r.title}</strong>
                           <p>
                             <IdentityChip label={appName(r.app)} model={r.model} />{" "}
-                            wants to join this room. Approving connects its
-                            exact session; nothing is routed until then.
+                            wants to join{" "}
+                            <strong>{roomName(s.rooms, r.room || s.activeRoom)}</strong>.
+                            Approving connects its exact session there;
+                            nothing is routed until then.
                           </p>
                           <small className="mono">{r.native}</small>
                         </div>
@@ -1246,44 +1275,9 @@ function App() {
                   </div>
                 )}
                 <h3>
-                  Needs you{" "}
-                  <span className="count">
-                    {(s.requests?.length || 0) +
-                      s.receipts.filter((r) => {
-                        const target = session(r.target);
-                        const binding = s.bindings.find(
-                          (b) => b.id === r.target,
-                        );
-                        return (
-                          ["unavailable", "uncertain"].includes(r.state) ||
-                          (r.state === "pending" &&
-                            target &&
-                            target.device === s.device &&
-                            !["pull", "mcp", "codex-queue"].includes(
-                              target.app,
-                            ) &&
-                            !(binding?.bridge_connected ?? false))
-                        );
-                      }).length +
-                      s.outbox.filter((o) => o.state === "failed").length}
-                  </span>
+                  Needs you <span className="count">{needsYouCount}</span>
                 </h3>
-                {s.receipts
-                  .filter((r) => {
-                    const target = session(r.target);
-                    const binding = s.bindings.find(
-                      (b) => b.id === r.target,
-                    );
-                    return (
-                      ["unavailable", "uncertain"].includes(r.state) ||
-                      (r.state === "pending" &&
-                        target &&
-                        target.device === s.device &&
-                        !["pull", "mcp", "codex-queue"].includes(target.app) &&
-                        !(binding?.bridge_connected ?? false))
-                    );
-                  })
-                  .map((r) => {
+                {stuckReceipts.map((r) => {
                     const target = session(r.target);
                     const binding = s.bindings.find(
                       (b) => b.id === r.target,
@@ -1337,25 +1331,12 @@ function App() {
                       </div>
                     </div>
                   ))}
-                {!s.receipts.some((r) => {
-                  const target = session(r.target);
-                  const binding = s.bindings.find((b) => b.id === r.target);
-                  return (
-                    ["unavailable", "uncertain"].includes(r.state) ||
-                    (r.state === "pending" &&
-                      target &&
-                      target.device === s.device &&
-                      !["pull", "mcp", "codex-queue"].includes(target.app) &&
-                      !(binding?.bridge_connected ?? false))
-                  );
-                }) &&
-                  !s.outbox.some((o) => o.state === "failed") &&
-                  !(s.requests?.length || 0) && (
-                    <div className="quiet-empty">
-                      <Check size={17} />
-                      Nothing needs your attention right now.
-                    </div>
-                  )}
+                {needsYouCount === 0 && (
+                  <div className="quiet-empty">
+                    <Check size={17} />
+                    Nothing needs your attention right now.
+                  </div>
+                )}
                 <h3>
                   Waiting on agents{" "}
                   <span className="count">

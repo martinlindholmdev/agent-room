@@ -108,6 +108,44 @@ class HubTests(unittest.TestCase):
         message['generation'] = 2
         self.hub.event(self.actor, message)
 
+    def test_session_remove_settles_receipts_keeps_work_owner_resolvable_and_allows_reconnect(self):
+        """Regression for M1. session_remove used to hard-delete the sessions
+        row, which left any receipt still addressed to it stuck forever (no
+        session will ever again report on its behalf) and made a work/review
+        object it owns permanently un-updatable ('work owner must be an
+        exact room session' can never again pass). Fix: soft-deactivate like
+        revoke() and settle the session's own dangling receipts."""
+        owner = self.binding(generation=3)
+        message = self.hub.event(self.actor, self.message(targets=[owner['id']]))
+        self.assertEqual('waiting', self.hub.snapshot(self.actor, 'general')['receipts'][0]['state'])
+        request = self.object('work', {'title': 'Fixture task', 'owner': owner['id'], 'state': 'proposed'})
+        self.hub.event(self.actor, request)
+        self.assertEqual({'removed': False}, self.hub.session_remove(self.actor, 'general', 'never-existed'))
+        self.assertEqual({'removed': True}, self.hub.session_remove(self.actor, 'general', owner['id']))
+        # Idempotent: removing an already-inactive session is a no-op, not an error.
+        self.assertEqual({'removed': False}, self.hub.session_remove(self.actor, 'general', owner['id']))
+        # The row survives (inactive), so it stays a valid session reference...
+        row = self.hub.db.execute('SELECT * FROM sessions WHERE id=?', (owner['id'],)).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(0, row['active'])
+        # ...the dangling receipt no longer sits in a permanently unresolvable
+        # 'waiting' state (no session will ever report on the removed
+        # session's behalf again)...
+        receipt = self.hub.snapshot(self.actor, 'general')['receipts'][0]
+        self.assertEqual('unavailable', receipt['state'])
+        self.assertEqual('session removed', receipt['reason'])
+        # ...and the work object it owns can still be updated/cancelled --
+        # not permanently stuck -- because the owner session still resolves.
+        cancel = self.object('work', {'title': 'Fixture task', 'owner': owner['id'], 'state': 'cancelled'}, request['body']['id'], 2)
+        self.hub.event(self.actor, cancel)
+        self.assertEqual('cancelled', self.hub.snapshot(self.actor, 'general')['objects'][0]['data']['state'])
+        # A removed session is not permanently exiled: reconnecting the same
+        # native+app pair must not be blocked by the generation number it
+        # held before removal (there is no live writer left to fence out).
+        reconnected = self.binding(native=owner['native'], generation=1)
+        self.assertEqual(owner['id'], reconnected['id'])
+        self.assertEqual(1, reconnected['generation'])
+
     def test_receipt_requires_exact_recipient_and_never_regresses(self):
         recipient, wrong = self.binding(), self.binding()
         message = self.hub.event(self.actor, self.message(targets=[recipient['id']]))
@@ -691,12 +729,20 @@ class PresenceAndRemovalTests(NodeTests):
         self.node.control('tool', request)
         self.assertEqual('done', next(b for b in self.node.snapshot()['bindings'] if b['id'] == binding['id'])['state'])
 
-    def test_binding_remove_deletes_local_and_hub_session_idempotently(self):
+    def test_binding_remove_deactivates_hub_session_settles_receipt_idempotently(self):
+        """Regression for M1. The hub session row used to be hard-deleted on
+        removal, which stranded any receipt still addressed to it (nothing
+        will ever again report on the removed session's behalf) and would
+        have made an owned work/review object permanently un-updatable. It
+        must instead be soft-deactivated -- like revoke() -- and its
+        dangling receipts settled, so no ghost receipt or stuck object is
+        left behind."""
         keep = self.bind()
         gone = self.bind()
         self.node.enqueue('message', {'text': 'to be orphaned', 'targets': [gone['id']]})
         self.node.sync_once()
         self.assertIn(gone['id'], [r['id'] for r in self.node.hub.rows('SELECT id FROM sessions')])
+        self.assertEqual('waiting', self.node.hub.rows('SELECT * FROM receipts WHERE target=?', (gone['id'],))[0]['state'])
         self.assertEqual(1, len(self.node.delivery.status('general')))
         result = self.node.control('binding-remove', {'binding': gone['id']})
         self.assertEqual({'removed': True, 'id': gone['id']}, result)
@@ -704,8 +750,16 @@ class PresenceAndRemovalTests(NodeTests):
         remaining_ids = [b['id'] for b in snap['bindings']]
         self.assertNotIn(gone['id'], remaining_ids)
         self.assertIn(keep['id'], remaining_ids)
-        # Hub session row removed too.
-        self.assertNotIn(gone['id'], [r['id'] for r in self.node.hub.rows('SELECT id FROM sessions')])
+        # Hub session row is deactivated, not deleted: it stays a resolvable
+        # session reference (e.g. for a work object it owns) instead of
+        # being stranded.
+        hub_session = next(r for r in self.node.hub.rows('SELECT * FROM sessions') if r['id'] == gone['id'])
+        self.assertEqual(0, hub_session['active'])
+        # No ghost receipt: the dangling receipt is settled rather than left
+        # stuck in 'waiting' forever.
+        receipt = self.node.hub.rows('SELECT * FROM receipts WHERE target=?', (gone['id'],))[0]
+        self.assertEqual('unavailable', receipt['state'])
+        self.assertEqual('session removed', receipt['reason'])
         # Local bookkeeping (offered cursor + delivery rows) cleaned up; no orphans.
         self.assertEqual([], self.node.rows('SELECT * FROM offered WHERE binding=?', (gone['id'],)))
         self.assertEqual([], [r for r in self.node.delivery.status('general') if r['session'] == gone['id']])

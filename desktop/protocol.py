@@ -156,16 +156,27 @@ class Hub(Database):
             return {'revoked': device}
 
     def session_remove(self, actor, room, session):
-        """Remove one session row this same device created, e.g. when the local
-        binding it backs is disconnected. Idempotent: a missing session is a
-        no-op, not an error, so a stale or already-removed binding never blocks
-        local cleanup."""
+        """Disconnect one session this same device created, e.g. when the local
+        binding it backs is disconnected. Soft-deactivate like revoke() does,
+        rather than deleting the row: a work/review object can carry this id
+        as its exact 'owner'/'reviewer' session, and hard-deleting the row
+        would make that reference permanently unresolvable (the object could
+        never again be updated, even to cancel it). Also settle any receipts
+        still addressed to this session -- including one caught mid-dispatch,
+        which would otherwise never resolve because nothing will ever again
+        report on this session's behalf -- so the inbox does not show a
+        permanently unresolvable "needs connection" for a session that is
+        never coming back. Idempotent: a missing or already-inactive session
+        is a no-op, not an error, so a stale or already-removed binding never
+        blocks local cleanup."""
         with self.lock, self.db:
             self.access(actor, room)
-            row = self.db.execute('SELECT 1 FROM sessions WHERE id=? AND room=? AND device=?', (session, room, actor['id'])).fetchone()
-            if not row:
+            row = self.db.execute('SELECT * FROM sessions WHERE id=? AND room=? AND device=?', (session, room, actor['id'])).fetchone()
+            if not row or not row['active']:
                 return {'removed': False}
-            self.db.execute('DELETE FROM sessions WHERE id=?', (session,))
+            self.db.execute('UPDATE sessions SET active=0 WHERE id=?', (session,))
+            self.db.execute("UPDATE receipts SET state='unavailable',reason='session removed',updated=?,revision=revision+1 "
+                            "WHERE target=? AND state NOT IN ('acknowledged','unavailable')", (time.time(), session))
             self.changed.notify_all()
             return {'removed': True}
 
@@ -208,7 +219,15 @@ class Hub(Database):
             self.access(actor, room)
             row = self.db.execute('SELECT * FROM sessions WHERE device=? AND room=? AND app=? AND native=?', (actor['id'], room, app, native)).fetchone()
             if row:
-                require(generation >= row['generation'], 'stale connector generation')
+                # A currently-inactive row means this exact session was
+                # disconnected (session_remove), not merely superseded by a
+                # newer live generation, so there is no concurrent stale
+                # writer left to fence out. Only enforce the fence while the
+                # previous binding is still active, so a removed session can
+                # always reconnect rather than being stuck behind a
+                # generation number from before it was removed.
+                if row['active']:
+                    require(generation >= row['generation'], 'stale connector generation')
                 self.db.execute('UPDATE sessions SET generation=?,active=1,title=? WHERE id=?', (generation, title, row['id']))
                 identity = row['id']
             else:
