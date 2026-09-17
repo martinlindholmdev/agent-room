@@ -63,7 +63,8 @@ type Receipt = {
   state: string;
   reason: string;
 };
-type Room = { id: string; title: string };
+type RoomRollup = { state: string; needs: number };
+type Room = { id: string; title: string; rollup?: RoomRollup };
 type Snapshot = {
   configured: boolean;
   mode: string;
@@ -92,6 +93,8 @@ type Snapshot = {
     state: string;
     model?: string;
   }[];
+  needsYou?: number;
+  activeCount?: number;
 };
 const empty: Snapshot = {
   configured: false,
@@ -113,6 +116,8 @@ const empty: Snapshot = {
   devices: [],
   pairing: [],
   requests: [],
+  needsYou: 0,
+  activeCount: 0,
 };
 const roomName = (rooms: Room[], id: string) =>
   rooms.find((r) => r.id === id)?.title || (id === "general" ? "General" : id);
@@ -591,6 +596,31 @@ function App() {
           <Search size={17} />
           Search<span className="shortcut">⌘ K</span>
         </button>
+        {s.configured && (
+          <>
+            <div className="nav-label">VIEWS</div>
+            <button
+              className="nav pinned-view"
+              onClick={() => {
+                setView("inbox");
+                setQuery("");
+              }}
+            >
+              <Circle size={17} />
+              Needs you
+              {(s.needsYou || 0) > 0 && (
+                <span className="count">{s.needsYou}</span>
+              )}
+            </button>
+            <button className="nav pinned-view" onClick={() => {}}>
+              <Play size={17} />
+              Active
+              {(s.activeCount || 0) > 0 && (
+                <span className="count">{s.activeCount}</span>
+              )}
+            </button>
+          </>
+        )}
         <div className="nav-label">YOUR ROOMS</div>
         {(s.rooms.length ? s.rooms : empty.rooms).map((r) => (
           <button
@@ -607,6 +637,14 @@ function App() {
           >
             <Hash size={17} />
             {r.title}
+            <span
+              className={
+                "status-dot status-" + (r.rollup?.state || "idle")
+              }
+            />
+            {(r.rollup?.needs || 0) > 0 && (
+              <span className="count">{r.rollup!.needs}</span>
+            )}
             {s.activeRoom === r.id && <span className="room-dot" />}
           </button>
         ))}

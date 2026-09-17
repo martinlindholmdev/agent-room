@@ -701,3 +701,54 @@ class PresenceAndRemovalTests(NodeTests):
         result = self.node.control('binding-remove', {'native': binding['native'], 'app': binding['app']})
         self.assertEqual({'removed': True, 'id': binding['id']}, result)
         self.assertNotIn(binding['id'], [b['id'] for b in self.node.snapshot()['bindings']])
+
+
+class RollupTests(NodeTests):
+    """Cross-room smart-views rollup: per-room 'rollup' plus top-level
+    needsYou/activeCount, computed only from this device's own bindings and
+    pending requests (no cross-device participant data exists to roll up)."""
+
+    def room(self, snap, room_id):
+        return next(r for r in snap['rooms'] if r['id'] == room_id)
+
+    def test_room_with_blocked_binding_rolls_up_to_blocked(self):
+        binding = self.bind()
+        self.node.control('binding-state', {'binding': binding['id'], 'state': 'blocked'})
+        snap = self.node.snapshot()
+        general = self.room(snap, 'general')
+        self.assertEqual('blocked', general['rollup']['state'])
+        self.assertEqual(1, general['rollup']['needs'])
+
+    def test_room_with_only_idle_bindings_rolls_up_to_idle(self):
+        self.bind()
+        snap = self.node.snapshot()
+        general = self.room(snap, 'general')
+        self.assertEqual('idle', general['rollup']['state'])
+        self.assertEqual(0, general['rollup']['needs'])
+
+    def test_empty_default_general_room_rolls_up_cleanly(self):
+        snap = self.node.snapshot()
+        general = self.room(snap, 'general')
+        self.assertEqual('idle', general['rollup']['state'])
+        self.assertEqual(0, general['rollup']['needs'])
+        self.assertEqual(0, snap['needsYou'])
+        self.assertEqual(0, snap['activeCount'])
+
+    def test_needs_you_counts_pending_requests_and_blocked_bindings_across_rooms(self):
+        created = self.node.control('room-create', {'title': 'Second room'})
+        self.node.control('room-select', {'room': 'general'})
+        blocked = self.bind()
+        self.node.control('binding-state', {'binding': blocked['id'], 'state': 'blocked'})
+        working = self.node.bind({'native': uid(), 'app': 'codex-queue', 'title': 'Busy synthetic agent', 'room': created['id']})
+        self.node.control('binding-state', {'binding': working['id'], 'state': 'working'})
+        self.node.request_create(uid(), 'codex-queue', 'Pending synthetic request')
+        self.node.sync_once()  # populate the cached room list (snapshot() reads it, not a live hub call)
+        snap = self.node.snapshot()
+        self.assertEqual(2, snap['needsYou'])  # 1 pending request + 1 blocked binding
+        self.assertEqual(1, snap['activeCount'])
+        other_room = self.room(snap, created['id'])
+        self.assertEqual('working', other_room['rollup']['state'])
+        self.assertEqual(0, other_room['rollup']['needs'])
+        general = self.room(snap, 'general')
+        self.assertEqual('blocked', general['rollup']['state'])
+        self.assertEqual(2, general['rollup']['needs'])  # 1 pending request (general) + 1 blocked binding

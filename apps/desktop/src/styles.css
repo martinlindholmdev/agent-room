@@ -309,6 +309,37 @@ code {
   border-radius: 50%;
   margin-left: auto;
 }
+/* Per-room presence rollup: worst-case state among this device's bindings
+   in that room. Same status palette as the identity-chip dot, just not
+   nested under .identity-chip so it can sit bare in a room row. */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--status-idle);
+}
+.status-dot.status-working {
+  background: var(--status-working);
+}
+.status-dot.status-blocked {
+  background: var(--status-blocked);
+}
+.status-dot.status-done {
+  background: var(--status-done);
+}
+.status-dot.status-idle {
+  background: var(--status-idle);
+}
+/* Pinned smart views (Needs you / Active), sat above the room list like a
+   Things-3 pinned smart list: same .nav shape, just quieter. */
+.pinned-view {
+  opacity: 0.85;
+  font-size: 11px;
+}
+.pinned-view:hover {
+  opacity: 1;
+}
 .sidebar-note {
   padding: 39px 13px;
   font-size: 11px;

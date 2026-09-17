@@ -611,6 +611,21 @@ class Node(Database):
             return self.set_binding_state(identity, args.get('state'))
         raise ValueError('unknown room tool')
 
+    def rollups(self, rooms, bindings, pending_requests):
+        """Device-local rollup only: this device's own bindings and pending
+        requests, grouped by room. There is no cross-device participant data
+        in this snapshot to roll up, so a room where this device has no
+        bindings or requests of its own simply reads idle/0."""
+        priority = {'idle': 0, 'done': 1, 'working': 2, 'blocked': 3}
+        result = []
+        for room in rooms:
+            room_bindings = [b for b in bindings if b['room'] == room['id']]
+            room_requests = [r for r in pending_requests if r.get('room', 'general') == room['id']]
+            state = max((b.get('state', 'idle') for b in room_bindings), key=lambda s: priority.get(s, 0), default='idle')
+            needs = len(room_requests) + sum(1 for b in room_bindings if b.get('state') == 'blocked')
+            result.append(dict(room, rollup={'state': state, 'needs': needs}))
+        return result
+
     def snapshot(self):
         active_room = self.get('room', 'general')
         cached = self.get('snapshot', {})
@@ -622,12 +637,17 @@ class Node(Database):
                   if json.loads(r['event']).get('room') == active_room]
         outbox = [dict(r, event=json.loads(r['event'])) for r in self.rows("SELECT * FROM outbox WHERE state<>'sent'")]
         outbox = [r for r in outbox if r['event'].get('room', active_room) == active_room]
+        bindings = self.bindings()
+        pending_requests = [r for r in self.requests() if r['state'] == 'pending']
         return dict(cached, configured=bool(self.get('mode')), mode=self.get('mode'), name=self.get('name', ''),
                     device=self.get('device'), room=active_room, activeRoom=active_room, online=self.online, error=self.error,
                     paused=self.get('paused', False), hub_url=self.get('hub_url', ''), events=events,
                     outbox=outbox,
-                    requests=[r for r in self.requests() if r['state'] == 'pending'],
-                    bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in self.bindings()])
+                    rooms=self.rollups(cached.get('rooms', []), bindings, pending_requests),
+                    requests=pending_requests,
+                    bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in bindings],
+                    needsYou=len(pending_requests) + sum(1 for b in bindings if b.get('state') == 'blocked'),
+                    activeCount=sum(1 for b in bindings if b.get('state') == 'working'))
 
     def control(self, action, data):
         if action == 'unlock':
