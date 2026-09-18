@@ -379,6 +379,7 @@ class Node(Database):
     def sync_once(self):
         if not self.get('mode'):
             return
+        self.settle_board_reports()
         for binding in self.bindings():
             self.call('bind', {k: binding[k] for k in ('native', 'app', 'title', 'room', 'generation')})
         for row in self.rows("SELECT * FROM outbox WHERE state='saved' ORDER BY rowid LIMIT 100"):
@@ -479,6 +480,25 @@ class Node(Database):
                 'desktop_home': str(self.root),
                 'desktop_helper': os.path.realpath(__import__('sys').executable) if getattr(__import__('sys'), 'frozen', False) else str(Path(__file__).resolve().parent.parent/'desktop_main.py')}
 
+    def explicit_receipt_target(self, message, target):
+        rows = self.rows('SELECT event FROM cache WHERE id=?', (message,))
+        if not rows:
+            return None
+        event = json.loads(rows[0]['event'])
+        if event.get('kind') != 'message':
+            return None
+        targets = event.get('body', {}).get('targets', [])
+        return target in targets if not targets or target in targets else None
+
+    def settle_board_reports(self):
+        # Retain local board delivery/ack state; retire provably invalid reports.
+        for row in self.rows("SELECT id,event FROM outbox WHERE state IN ('saved','failed')"):
+            event = json.loads(row['event'])
+            body = event.get('body', {})
+            if event.get('kind') == 'receipt' and self.explicit_receipt_target(body.get('message'), body.get('target')) is False:
+                with self.lock, self.db:
+                    self.db.execute("UPDATE outbox SET state='sent',error='' WHERE id=? AND state IN ('saved','failed')", (row['id'],))
+
     def report(self):
         # Report on every room a binding lives in, not only the room currently
         # shown in the UI, so a background agent's receipts still reach the hub.
@@ -500,6 +520,8 @@ class Node(Database):
                     with self.lock, self.db:
                         self.db.execute('DELETE FROM reports WHERE id=?', (row['id'],))
                     continue
+                if self.explicit_receipt_target(row['message'], row['session']) is False:
+                    continue  # Board fan-out is local, not an explicit hub receipt.
                 previous = self.rows('SELECT state FROM reports WHERE id=?', (row['id'],))
                 if previous and previous[0]['state'] == state:
                     continue
@@ -779,6 +801,10 @@ class Node(Database):
             return self.enqueue('message', {'text': data['text'], 'targets': data.get('targets', []), 'reply_to': data.get('reply_to')}, event_id=data.get('id'))
         if action == 'object':
             return self.enqueue('object', data, event_id=data.get('event_id'))
+        if action == 'outbox-status':
+            rows = self.rows('SELECT id,state,error AS reason FROM outbox WHERE id=?', (data['id'],))
+            require(rows, 'saved operation not found')
+            return dict(rows[0])
         if action == 'pause':
             self.put('paused', bool(data['paused']))
             return {'paused': self.get('paused')}
