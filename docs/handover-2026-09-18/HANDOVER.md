@@ -5,7 +5,7 @@ then **tested for real, autonomously**. Everything below is on branch `feat/over
 in this repo. Nothing is pushed or merged. The installed `/Applications/Agent Room.app` is
 still the OLD build.
 
-Repo: `/Users/irislindholm/Documents/Codex/2026-09-14/review-and-fix-the-agent-room/work/agent-room-app`
+Repo: `/Users/irislindholm/Code/agent-room-app`
 
 ## Owner's instruction for this task
 1. **Redeploy** so ALL of it goes live in the real desktop app in one shot: the generic

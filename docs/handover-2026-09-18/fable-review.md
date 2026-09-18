@@ -1,6 +1,6 @@
 # Fable review — `feat/overnight-build` (6 increments) — 2026-09-17
 
-Repo: `/Users/irislindholm/Documents/Codex/2026-09-14/review-and-fix-the-agent-room/work/agent-room-app`
+Repo: `/Users/irislindholm/Code/agent-room-app`
 Range: `feat/persistent-agent-room-app..feat/overnight-build` (6 commits, 10 files, +1374/-341).
 Read-only review. Nothing edited, built or installed. The installed app profile was not touched.
 

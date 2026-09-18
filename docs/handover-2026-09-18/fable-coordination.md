@@ -1,6 +1,6 @@
 # Agent Room: autonomous two-way coordination — trace, design, recipe, gaps
 
-Repo: `/Users/irislindholm/Documents/Codex/2026-09-14/review-and-fix-the-agent-room/work/agent-room-app`
+Repo: `/Users/irislindholm/Code/agent-room-app`
 (branch `feat/overnight-build`, 149 tests pass, installed helper exposes the same flags incl. `--generic`).
 Read-only investigation, 2026-09-17. All line numbers are from that branch.
 

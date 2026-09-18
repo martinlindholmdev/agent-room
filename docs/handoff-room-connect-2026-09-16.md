@@ -3,7 +3,7 @@
 For the next session picking this up. Everything is implemented and tested;
 the work is at the **install/verification** stage. Last commit on main is
 `1f5e578`; all changes below are UNCOMMITTED in the worktree at
-`/Users/irislindholm/Documents/Codex/2026-09-14/review-and-fix-the-agent-room/work/agent-room-app`.
+`/Users/irislindholm/Code/agent-room-app`.
 
 ## What was built (complete, tested at code level)
 

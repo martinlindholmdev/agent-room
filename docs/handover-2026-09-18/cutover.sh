@@ -4,7 +4,7 @@
 # Reversible: the old bundle and the old data dir are BACKED UP (not deleted) to your Desktop.
 set -euo pipefail
 
-NEW="$HOME/Documents/Codex/2026-09-14/review-and-fix-the-agent-room/work/agent-room-app/apps/desktop/src-tauri/target/release/bundle/macos/Agent Room.app"
+NEW="$HOME/Code/agent-room-app/apps/desktop/src-tauri/target/release/bundle/macos/Agent Room.app"
 INSTALLED="/Applications/Agent Room.app"
 DATA="$HOME/Library/Application Support/Agent Room"
 TS="$(date +%Y%m%d-%H%M%S)"
