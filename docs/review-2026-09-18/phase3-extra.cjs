@@ -1,0 +1,18 @@
+// Supplemental read/write browser probes against the Phase 3 isolated helper only.
+const fs=require('fs');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'/Users/irislindholm/.local/share/opencode/integrations/playwright/node_modules/playwright');
+const ready=JSON.parse(fs.readFileSync('work/phase3-clean/ready.json'));
+(async()=>{
+const b=await chromium.launch({channel:'chrome',headless:true});const p=await b.newPage();p.setDefaultTimeout(5000);
+await p.route('**/control',async route=>{try{const r=await fetch('http://127.0.0.1:'+ready.port+'/control',{method:'POST',headers:{Authorization:'Bearer '+ready.token,'Content-Type':'application/json'},body:route.request().postData(),signal:AbortSignal.timeout(1200)});await route.fulfill({contentType:'application/json',body:JSON.stringify(await r.json())});}catch{await route.fulfill({status:503,body:JSON.stringify({error:'Local helper unavailable'})});}});
+await p.goto('http://127.0.0.1:1420');await p.waitForTimeout(2200);
+const out={};const d=()=>p.locator('dialog[open]');
+await p.keyboard.press('Control+k');out.ctrlKOpened=await p.locator('.palette').count();await p.keyboard.press('Escape');
+out.dynamic=[];for(const q of ['Browser reviewer','Browser plan','Browser first line']){await p.locator('.sidebar').getByRole('button',{name:/^Search/}).click();await p.getByLabel('Command palette').fill(q);await p.getByLabel('Command palette').press('ArrowDown');await p.getByLabel('Command palette').press('ArrowUp');await p.getByLabel('Command palette').press('Enter');await p.waitForTimeout(150);out.dynamic.push({q,headings:await d().getByRole('heading').allTextContents(),target:await p.getByLabel('Message recipient').inputValue().catch(()=>null)});if(await d().count())await p.keyboard.press('Escape');}
+await p.locator('.sidebar').getByRole('button',{name:/Plans & work/}).click();await p.locator('.object-card').filter({hasText:'Browser work'}).click();await d().getByLabel('Status').selectOption('resolved');await d().getByLabel('Completion evidence').fill('Browser test evidence');await p.getByRole('button',{name:'Save work',exact:true}).click();await p.waitForTimeout(2200);out.workCard=await p.locator('.object-card').filter({hasText:'Browser work'}).innerText();
+await p.locator('.sidebar').getByRole('button',{name:'Settings',exact:true}).click();await p.getByRole('button',{name:'System',exact:true}).click();out.systemTheme=await p.locator('html').getAttribute('data-theme');await p.getByRole('button',{name:'Pair another Mac',exact:true}).click();out.pairDialog=await d().getByRole('heading').innerText();await p.getByRole('button',{name:'View pairing requests',exact:true}).click();
+// Never print invitation inputs or credentials. Suspend only our isolated helper.
+process.kill(ready.pid,'SIGSTOP');try{await p.waitForTimeout(4500);out.actualHelperSuspended={banner:await p.getByRole('alert').innerText(),status:await p.locator('.quiet-status').innerText()};}finally{process.kill(ready.pid,'SIGCONT');}
+await p.waitForTimeout(2200);await p.getByRole('button',{name:'New room',exact:true}).click();await p.waitForTimeout(150);out.dialogFocus=await p.evaluate(()=>({tag:document.activeElement.tagName,name:document.activeElement.getAttribute('name'),aria:document.activeElement.getAttribute('aria-label')}));await p.keyboard.press('Tab');out.tabFocus=await p.evaluate(()=>({tag:document.activeElement.tagName,text:document.activeElement.textContent}));await p.keyboard.press('Escape');out.escapeClosed=await d().count()===0;
+console.log(JSON.stringify(out,null,2));await b.close();
+})().catch(e=>{try{process.kill(ready.pid,'SIGCONT')}catch{}console.error(e.message);process.exit(1)});
