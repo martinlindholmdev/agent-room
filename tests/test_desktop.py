@@ -496,6 +496,55 @@ class NodeTests(unittest.TestCase):
         self.assertLess(elapsed, 5, 'wait-next should wake immediately on notify, not sleep out the full hop')
         self.assertTrue(result['status']['ready'])
 
+    def test_board_fanout_reports_stay_local_and_old_failures_are_retired(self):
+        binding = self.bind('pull')
+        board = self.node.enqueue('message', {'text': 'Board', 'targets': []})
+        self.node.sync_once()
+        delivery = self.node.delivery.status('general')[0]
+        old = self.node.enqueue('receipt', {'message': board['id'], 'target': binding['id'],
+                               'state': 'unavailable'}, binding['id'])
+        with self.node.db:
+            self.node.db.execute("UPDATE outbox SET state='failed',error='receipt target does not belong to message' WHERE id=?", (old['id'],))
+        self.node.report()
+        self.node.sync_once()
+        self.assertEqual([], self.node.snapshot()['outbox'])
+        self.assertEqual([], self.node.snapshot()['receipts'])
+        self.node.tool(binding['id'], 'room_read', {})
+        self.node.tool(binding['id'], 'room_ack', {'delivery_ids': [delivery['id']]})
+        self.node.report(); self.node.sync_once()
+        self.assertEqual('acknowledged', self.node.delivery.status('general')[0]['state'])
+        self.assertEqual([], self.node.snapshot()['outbox'])
+        self.assertEqual([], self.node.snapshot()['receipts'])
+
+    def test_receipt_cleanup_preserves_explicit_and_unknown_failures(self):
+        binding = self.bind('pull')
+        message = self.node.enqueue('message', {'text': 'Direct', 'targets': [binding['id']]})
+        self.node.sync_once()
+        for source in [message['id'], 'unknown-source']:
+            receipt = self.node.enqueue('receipt', {'message': source, 'target': binding['id'],
+                                        'state': 'unavailable'}, binding['id'])
+            with self.node.db:
+                self.node.db.execute("UPDATE outbox SET state='failed',error='unrelated failure' WHERE id=?", (receipt['id'],))
+        self.node.settle_board_reports()
+        self.assertEqual(2, len(self.node.rows("SELECT id FROM outbox WHERE state='failed'")))
+
+    def test_outbox_status_reports_confirmed_and_rejected_object_saves(self):
+        binding = self.bind('pull')
+        data = {'id': uid(), 'type': 'work', 'version': 1,
+                'data': {'title': 'Work', 'owner': binding['id'], 'state': 'resolved'}}
+        bad = self.node.control('object', data)
+        self.assertEqual('saved', self.node.control('outbox-status', {'id': bad['id']})['state'])
+        self.node.sync_once()
+        result = self.node.control('outbox-status', {'id': bad['id']})
+        self.assertEqual('failed', result['state'])
+        self.assertIn('completion evidence', result['reason'])
+        data['data']['evidence'] = 'Tests passed'
+        good = self.node.control('object', data)
+        self.node.sync_once()
+        self.assertEqual('sent', self.node.control('outbox-status', {'id': good['id']})['state'])
+        with self.assertRaises(ValueError):
+            self.node.control('outbox-status', {'id': 'missing'})
+
     def test_board_post_fans_out_delivery_rows_to_room_members_not_sender(self):
         sender = self.bind('mcp')
         codex_recipient = self.bind('codex-queue')

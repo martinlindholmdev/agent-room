@@ -436,6 +436,7 @@ function App() {
       setLoaded(true);
     } catch (e) {
       setConnectionError(String(e));
+      setS((current) => ({ ...current, online: false }));
       setLoaded(true);
     }
   };
@@ -718,7 +719,9 @@ function App() {
               <span
                 className={"connection-dot " + (s.online ? "online" : "")}
               />
-              {s.paused
+              {connectionError
+                ? "Local helper unavailable"
+                : s.paused
                 ? "Delivery paused"
                 : s.online
                   ? "Room hub connected"
@@ -764,8 +767,9 @@ function App() {
         )}
         {!s.online && s.configured && (
           <div className="notice">
-            Connection unavailable. New messages stay saved on this Mac and sync
-            when the hub returns.
+            {connectionError
+              ? "Local helper unavailable. Drafts stay in this window; keep it open and retry when the helper returns."
+              : "Connection unavailable. New messages stay saved on this Mac and sync when the hub returns."}
           </div>
         )}
         <div className="main-row">
@@ -2322,7 +2326,7 @@ function App() {
           sessions={activeSessions}
           busy={busy}
           onClose={() => setDialog("")}
-          onSave={(data) => act("object", data)}
+          onSave={(data) => act("object", data, false)}
         />
       )}
       {palette && (
@@ -2416,6 +2420,37 @@ function Workflow({
 }) {
   const [kind, setKind] = useState(editing?.kind || initialKind || "work");
   const d = editing?.data || {};
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const submitted = useRef<any>(null);
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  const submit = async (data: any) => {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const id = pendingId || crypto.randomUUID();
+      if (!pendingId) submitted.current = { ...data, event_id: id };
+      setPendingId(id);
+      // Retrying the exact event ID is safe even after a lost enqueue response.
+      await onSave(submitted.current);
+      if (!mounted.current) return;
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const result = await api("outbox-status", { id });
+        if (!mounted.current) return;
+        if (result.state === "sent") { onClose(); return; }
+        if (result.state === "failed" || result.state === "cancelled") {
+          setPendingId(null);
+          throw Error(result.reason || "Save cancelled. Review your changes and try again.");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      setSaveError("Saved on this Mac, awaiting hub confirmation. Check again before submitting another change.");
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally { setSaving(false); }
+  };
   return (
     <Dialog
       title={editing?.version ? "Update " + kind : "New request"}
@@ -2452,7 +2487,7 @@ function Workflow({
               checks: value("checks"),
               findings: "",
             };
-          void onSave({
+          void submit({
             id: editing?.id || crypto.randomUUID(),
             type: kind,
             version: (editing?.version || 0) + 1,
@@ -2460,6 +2495,8 @@ function Workflow({
           }).catch(() => {});
         }}
       >
+        {saveError && <p role="alert">{saveError}</p>}
+        <fieldset disabled={saving || !!pendingId || busy} style={{ border: 0, padding: 0, margin: 0 }}>
         <label>
           Type
           <select
@@ -2614,8 +2651,9 @@ function Workflow({
             )}
           </>
         )}
-        <button className="primary wide" disabled={busy}>
-          Save {kind} <Check size={15} />
+        </fieldset>
+        <button className="primary wide" disabled={busy || saving}>
+          {saving ? "Confirming save…" : pendingId ? "Check save status" : "Save " + kind} <Check size={15} />
         </button>
       </form>
     </Dialog>
