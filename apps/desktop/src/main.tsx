@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import "./styles.css";
+import { presenceText, type Presence } from "./presence";
 import { createInteractionState } from "./interaction-state";
 import { createSnapshotController } from "./snapshot-controller";
 
@@ -42,6 +43,8 @@ type Session = {
   bridge_connected?: boolean;
   model?: string;
   state?: string;
+  state_reported_at?: number;
+  last_contact_at?: number;
   room?: string;
 };
 type Event = {
@@ -139,14 +142,6 @@ const appName = (app: string) =>
   })[app] || app;
 const appLabel = (app: string, model?: string) =>
   model ? appName(app) + " · " + model : appName(app);
-// Self-reported presence only (detection is clever; being told is sturdier).
-const PRESENCE_LABEL: Record<string, string> = {
-  working: "Working",
-  idle: "Idle",
-  blocked: "Blocked",
-  done: "Done",
-};
-const presenceLabel = (state?: string) => PRESENCE_LABEL[state || "idle"];
 type DeliveryHealth = "good" | "warn" | "down";
 const targetHealth = (
   target: string,
@@ -348,25 +343,31 @@ function Palette({
     </dialog>
   );
 }
-// Signature element: a live status dot + app name + model, in mono.
-// Repeated in the participants panel, message author lines and connection
-// cards so "app + model + state" is the one visual through-line of the app.
-function IdentityChip({
-  label,
-  model,
-  status,
-}: {
+// Work reports and contact are independent; neither asserts process liveness.
+function PresenceDetails({ binding }: { binding: Presence }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const text = presenceText(binding, now);
+  return <span className="presence-details">
+    <span>{text.work}</span>
+    <span>{text.contact}</span>
+    {text.mode && <span>{text.mode}</span>}
+  </span>;
+}
+function IdentityChip({ label, model, binding }: {
   label: string;
   model?: string;
-  status?: string;
+  binding?: Presence;
 }) {
   return (
-    <span className={"identity-chip status-" + (status || "idle")}>
-      <span className="identity-dot" />
-      <span className="identity-text">
-        {label}
-        {model ? " · " + model : ""}
+    <span className="identity-with-presence">
+      <span className="identity-chip">
+        <span className="identity-text">{label}{model ? " · " + model : ""}</span>
       </span>
+      {binding && <PresenceDetails binding={binding} />}
     </span>
   );
 }
@@ -673,10 +674,10 @@ function App() {
             </button>
             <div
               className="nav pinned-view static"
-              title="Bindings currently self-reporting as working, across all your rooms on this Mac"
+              title="Last reported work state across this Mac, including old reports. Not agent availability."
             >
               <Play size={17} />
-              Active
+              Reported working
               {(s.activeCount || 0) > 0 && (
                 <span className="count">{s.activeCount}</span>
               )}
@@ -699,11 +700,9 @@ function App() {
           >
             <Hash size={17} />
             {r.title}
-            <span
-              className={
-                "status-dot status-" + (r.rollup?.state || "idle")
-              }
-            />
+            {r.rollup && <span className="room-work-report">
+              {r.rollup.state === "unknown" ? "No work report" : "Last reported: " + r.rollup.state}
+            </span>}
             {(r.rollup?.needs || 0) > 0 && (
               <span className="count">{r.rollup!.needs}</span>
             )}
@@ -1013,7 +1012,7 @@ function App() {
                           <IdentityChip
                             label={appName(p.app)}
                             model={p.model}
-                            status={p.state}
+                            binding={p}
                           />
                           <small className="mono">{p.native}</small>
                           <small title="Bound room">
@@ -1601,11 +1600,7 @@ function App() {
                                   <IdentityChip
                                     label={appName(participant.app)}
                                     model={participant.model}
-                                    status={
-                                      s.bindings.find(
-                                        (b) => b.id === participant.id,
-                                      )?.state
-                                    }
+                                    binding={s.bindings.find(b => b.id === participant.id) || { app: participant.app }}
                                   />
                                 )}
                                 <time
@@ -1889,13 +1884,11 @@ function App() {
                         <Terminal size={14} />
                       </div>
                       <div>
-                        <strong title={presenceLabel(
-                          s.bindings.find((b) => b.id === p.id)?.state,
-                        )}>{p.title}</strong>
+                        <strong>{p.title}</strong>
                         <IdentityChip
                           label={appName(p.app)}
                           model={s.bindings.find((b) => b.id === p.id)?.model}
-                          status={s.bindings.find((b) => b.id === p.id)?.state}
+                          binding={s.bindings.find((b) => b.id === p.id) || { app: p.app }}
                         />
                         <small>{p.device_name}</small>
                         <span className="participant-status">

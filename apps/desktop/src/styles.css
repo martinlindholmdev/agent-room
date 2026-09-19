@@ -1529,3 +1529,9 @@ details p {
   width: 14px;
   height: 14px;
 }
+
+/* B5: ordinary text, not grayscale dots/tooltips, carries presence. */
+.identity-with-presence, .presence-details { display: block; }
+.presence-details { font-size: 11px; line-height: 1.5; font-family: inherit; }
+.presence-details > span { display: block; }
+.room-work-report { font-size: 10px; margin-left: auto; white-space: normal; }
