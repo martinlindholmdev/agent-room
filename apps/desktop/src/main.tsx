@@ -80,6 +80,7 @@ type Snapshot = {
   events: Event[];
   sessions: Session[];
   bindings: Session[];
+  pending_removals?: { id: string; title: string; app: string; room: string }[];
   receipts: Receipt[];
   objects: ObjectItem[];
   outbox: { id: string; state: string; error: string; event: Event }[];
@@ -946,6 +947,16 @@ function App() {
                     Each binding points to one exact existing conversation. A
                     new session gets a new identity.
                   </p>
+                  {(s.pending_removals || []).map((p) => (
+                    <div className="settings-row" key={p.id} role="status">
+                      <Terminal size={18} />
+                      <div>
+                        <strong>{p.title}</strong>
+                        <small>#{roomName(s.rooms, p.room)} · Disconnected locally</small>
+                        <small>Hub removal pending. Retried automatically when the hub is available.</small>
+                      </div>
+                    </div>
+                  ))}
                   {s.bindings.map((p) => (
                     <div className="settings-row" key={p.id}>
                       <Terminal size={18} />
@@ -2301,7 +2312,8 @@ function App() {
         <Dialog title="Remove connection" onClose={() => setDialog("")}>
           <p>
             Remove the connection to “{editing.data.title}”? The session is
-            disconnected; reconnecting later creates a new one.
+            disconnected locally now. If the hub is unavailable, removal will
+            finish automatically after reconnection. Message history is kept.
           </p>
           <button
             className="primary wide"
