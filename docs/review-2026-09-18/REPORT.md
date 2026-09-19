@@ -39,6 +39,10 @@ history-preservation regressions are documented in [B1](b1-durable-disconnect.md
 Checks: **198 passed in 25.60s**, desktop **tsc --noEmit exit 0**. No deployment or
 live-data access. B2 and all other open findings remain untouched.
 
+## B2 implementation follow-up — 2026-09-19
+
+R02 and R07 are now **FIXED in source** by B2. Request/room generation guards reject stale successes and failures; cold helper failure stays unavailable until configuration is confirmed, with automatic recovery. See [B2](b2-ordered-snapshots.md): **11 controller tests + 6 synthetic Chrome tests passed**, **198 passed in 26.60s**, desktop **tsc --noEmit exit 0**. Original findings below are historical evidence for these two IDs. No deployment or live-data access. Stop before B3; R05/R06 and all other open findings remain untouched.
+
 ## Findings register
 
 Open unless labelled **FIXED**. Duplicate phase findings are consolidated; detailed
