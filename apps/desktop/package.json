@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "test:snapshots": "node --test ../../tests/snapshot-controller.test.mjs",
+    "test:snapshots:browser": "node --test ../../tests/snapshot-browser.test.mjs",
     "build": "tsc && vite build",
     "tauri": "tauri"
   },
