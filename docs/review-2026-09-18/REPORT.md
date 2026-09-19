@@ -63,6 +63,16 @@ claims read-only, and the review opener corrected. See [B4](b4-safe-workflow.md)
 **tsc --noEmit exit 0**. Original findings below remain historical evidence.
 No deployment/live-data access. Stop before B5; all other findings untouched.
 
+## B5 implementation follow-up — 2026-09-19
+
+R03 and R24’s presence portion are now **FIXED in source**. Independent persisted
+work-report/contact timestamps, a five-minute **No recent contact** threshold,
+unknown evidence and on-demand text replace implied liveness. Idle connections
+are retained. See [B5](b5-honest-presence.md): **10 B5 frontend + 45 B2/B3/B4
+regressions passed**, **211 passed in 27.07s**, desktop **tsc --noEmit exit 0**.
+Original findings remain historical evidence; R24 palette semantics remain B8.
+No deployment/live-data access. Stop before B6; all other findings untouched.
+
 ## Findings register
 
 Open unless labelled **FIXED**. Duplicate phase findings are consolidated; detailed

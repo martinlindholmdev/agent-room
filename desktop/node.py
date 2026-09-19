@@ -218,7 +218,7 @@ class Node(Database):
         result = []
         for r in self.rows('SELECT * FROM bindings'):
             data = json.loads(r['data'])
-            data.setdefault('state', 'idle')
+            data.setdefault('state', 'unknown')
             data['paused'] = bool(r['paused'])
             result.append(data)
         return result
@@ -254,6 +254,10 @@ class Node(Database):
         if app == 'opencode-bridge':
             require(not existing or existing.get('directory') == directory, 'native workspace binding is immutable')
             binding['directory'] = directory
+        if existing:
+            for key in ('state', 'state_reported_at', 'last_contact_at'):
+                if key in existing:
+                    binding[key] = existing[key]
         binding['model'] = model
         self.save_binding(binding)
         self.delivery.register(binding['id'], binding['room'], app, app, native if app == 'codex-queue' else '')
@@ -297,6 +301,17 @@ class Node(Database):
         match = next((b for b in self.bindings() + self.pending_removals() if b['native'] == native and b['app'] == app), None)
         return match['id'] if match else None
 
+    def record_contact(self, identity):
+        """Persist agent/connector contact, not helper sync or UI polling.
+
+        Contact is not proof that an agent process or task is still running.
+        Wall time survives restart without rejuvenating the last contact.
+        """
+        with self.lock:
+            binding = self.binding(identity)
+            binding['last_contact_at'] = time.time()
+            self.save_binding(binding)
+
     def set_binding_state(self, identity, state):
         """Explicit self-report only. Detection is clever; being told is
         sturdier, so this never infers presence from activity."""
@@ -305,6 +320,8 @@ class Node(Database):
         with self.lock:
             binding = self.binding(identity)
             binding['state'] = state
+            binding['state_reported_at'] = time.time()
+            binding['last_contact_at'] = binding['state_reported_at']
             self.save_binding(binding)
         self.work.set()
         return {'id': identity, 'state': state}
@@ -618,6 +635,7 @@ class Node(Database):
         binding = self.binding(identity)
         require(binding['native'] == native and binding['app'] == app and app in ('opencode-bridge', 'claude-channel'), 'native bridge identity mismatch')
         require(expected_generation is None or binding['generation'] == expected_generation, 'connector generation changed; reconnect exact native session')
+        self.record_contact(identity)
         lease = secrets.token_urlsafe(32)
         self.bridge_leases[identity] = lease
         self.bridge_seen[identity] = time.monotonic()
@@ -632,6 +650,7 @@ class Node(Database):
         deadline = time.monotonic()+min(20, max(0, timeout))
         while True:
             require(secrets.compare_digest(self.bridge_leases.get(identity, ''), lease), 'bridge superseded; reconnect exact native session')
+            self.record_contact(identity)
             self.bridge_seen[identity] = time.monotonic()
             self.delivery.heartbeat(identity, binding['room'])
             if self.online and not self.get('paused') and not binding.get('paused'):
@@ -648,6 +667,7 @@ class Node(Database):
         binding = self.binding(identity)
         require(any(r['id'] == delivery_id for r in self.delivery.status(binding['room']) if r['session'] == identity), 'delivery does not belong to bridge')
         require(state in ('submitted', 'uncertain', 'unavailable'), 'invalid native send result')
+        self.record_contact(identity)
         self.delivery.finish(delivery_id, state, 'Native app accepted; awaiting explicit receipt' if state == 'submitted' else 'Native send not confirmed; no automatic retry')
         self.work.set()
         return {'state': state}
@@ -672,6 +692,7 @@ class Node(Database):
             binding = self.binding(identity)
             require(binding['native'] == native and binding['generation'] == generation,
                     'wait requires exact active identity and generation')
+            self.record_contact(identity)
             room = binding['room']
             offered = self.rows('SELECT * FROM offered WHERE binding=?', (identity,))
             baseline = max(offered[0]['seq'], offered[0]['cursor']) if offered else 0
@@ -689,6 +710,7 @@ class Node(Database):
                 self.bridge_condition.wait(min(1, deadline-time.monotonic()))
 
     def tool(self, identity, name, args):
+        self.record_contact(identity)
         binding = self.binding(identity)
         room = binding['room']
         if name == 'room_post':
@@ -752,13 +774,13 @@ class Node(Database):
         """Device-local rollup only: this device's own bindings and pending
         requests, grouped by room. There is no cross-device participant data
         in this snapshot to roll up, so a room where this device has no
-        bindings or requests of its own simply reads idle/0."""
-        priority = {'idle': 0, 'done': 1, 'working': 2, 'blocked': 3}
+        bindings or requests of its own has unknown work state/0."""
+        priority = {'unknown': -1, 'idle': 0, 'done': 1, 'working': 2, 'blocked': 3}
         result = []
         for room in rooms:
             room_bindings = [b for b in bindings if b['room'] == room['id']]
             room_requests = [r for r in pending_requests if r.get('room', 'general') == room['id']]
-            state = max((b.get('state', 'idle') for b in room_bindings), key=lambda s: priority.get(s, 0), default='idle')
+            state = max((b.get('state', 'unknown') for b in room_bindings), key=lambda s: priority.get(s, 0), default='unknown')
             needs = len(room_requests) + sum(1 for b in room_bindings if b.get('state') == 'blocked')
             result.append(dict(room, rollup={'state': state, 'needs': needs}))
         return result
@@ -860,6 +882,7 @@ class Node(Database):
         if action == 'bridge-heartbeat':
             binding=self.binding(data['binding'])
             require(secrets.compare_digest(self.bridge_leases.get(binding['id'], ''), data['lease']), 'stale bridge lease')
+            self.record_contact(binding['id'])
             self.bridge_seen[binding['id']]=time.monotonic()
             self.delivery.heartbeat(binding['id'],binding['room'])
             return {'alive': True}
@@ -870,6 +893,7 @@ class Node(Database):
             require(binding['app'] in PULL_LIKE and data.get('native') == binding['native'] and
                     data.get('generation') == binding['generation'],
                     'watch requires exact active pull identity and generation')
+            self.record_contact(binding['id'])
             if not self.online or self.get('paused', False) or binding.get('paused', False):
                 return {'oldest': 0, 'latest': 0}
             oldest, latest = 0, 0

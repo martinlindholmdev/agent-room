@@ -1,22 +1,22 @@
-# PICKUP — B4 safe workflow editing implemented; stop before B5
+# PICKUP — B5 honest presence implemented; stop before B6
 
-Done: Review phases 1–7 and B1–B4 are implemented in source. B4 fixes R04, R09,
-R11 and R12, plus R10's definite-enqueue-rejection slice. Review verdict/findings
-survive metadata and object-version-counter edits; only artifact, exact revision
-or base revision changes invalidate them. Existing assignments are fixed; resolved
-work requires evidence; claims are read-only; the review opener is corrected.
-Explicit rejection unlocks editing; uncertain acceptance retains exact ID/payload.
-R10 request timeouts remain B6, together with broader error lifecycle/contracts.
+Done: Review phases 1–7 and B1–B5 are implemented in source. B5 fixes R03 and
+R24's presence portion. Last-reported work and contact have separate persisted
+wall-clock timestamps. At five minutes, contact reads “No recent contact” without
+changing the work report. Missing evidence is unknown; on-demand silence is
+explicitly expected. Accessible text replaces presence-only dots/tooltips. No idle
+connection is automatically removed. Remote evidence remains unknown, not liveness.
 
-Evidence: b4-safe-workflow.md and its references. **14 B4 synthetic Chrome tests +
-31 B2/B3 regressions passed (45/45)**; **205 passed in 25.60s**, desktop
-**tsc --noEmit exit 0**. Browser tests intercept control responses, not a live helper.
-B1–B3 evidence and session-only draft-retention limits remain in their batch notes.
+Evidence: [b5-honest-presence.md](b5-honest-presence.md) and its references.
+**10 B5 frontend tests + 45 B2/B3/B4 regressions passed**; **211 passed in 27.07s**;
+desktop **tsc --noEmit exit 0**. Chrome tests use synthetic control responses;
+Python tests use isolated temporary homes under work/. No installed-app claim.
+B1–B4 notes retain prior evidence and session-only draft-retention limits.
 
-Next: **Stop. B5 has not started.** In a fresh conversation, owner may authorize B5
-honest presence (R03, presence portion of R24). Read AGENTS.md, REPORT.md and this
-note; start a fresh branch from updated main. Owner must choose stale threshold/
-wording; do not auto-delete idle connections. Other findings remain untouched.
+Next: **Stop. B6 has not started.** In a fresh conversation, owner may authorize
+B6 error lifecycle (R08, R10 timeout portion, R19, R20). Read AGENTS.md, REPORT.md
+and this note; branch from updated main. R24 palette semantics remain B8. Other
+findings remain untouched; do not auto-retry uncertain native sends.
 
 Safety: No installed-app rebuild/replacement or live-data access. Owner controls deployment.
 Never commit credentials, ready.json or work/ contents. gh is at ~/.local/bin/gh.

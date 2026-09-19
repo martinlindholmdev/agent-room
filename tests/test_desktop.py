@@ -825,10 +825,10 @@ class RoomTests(NodeTests):
 class PresenceAndRemovalTests(NodeTests):
     """Self-reported presence (Feature A) and disconnect/remove (Feature B)."""
 
-    def test_binding_state_round_trips_defaults_idle_and_rejects_invalid(self):
+    def test_binding_state_round_trips_defaults_unknown_and_rejects_invalid(self):
         binding = self.bind()
         snap = self.node.snapshot()
-        self.assertEqual('idle', next(b for b in snap['bindings'] if b['id'] == binding['id'])['state'])
+        self.assertEqual('unknown', next(b for b in snap['bindings'] if b['id'] == binding['id'])['state'])
         self.node.control('binding-state', {'binding': binding['id'], 'state': 'working'})
         snap = self.node.snapshot()
         self.assertEqual('working', next(b for b in snap['bindings'] if b['id'] == binding['id'])['state'])
@@ -894,7 +894,7 @@ class PresenceAndRemovalTests(NodeTests):
         self.assertEqual({'removed': False}, self.node.control('binding-remove', {'binding': 'never-existed'}))
         self.assertEqual({'removed': False}, self.node.control('binding-remove', {'native': 'nope', 'app': 'codex-queue'}))
         # The other binding is completely unaffected.
-        self.assertEqual('idle', next(b for b in self.node.snapshot()['bindings'] if b['id'] == keep['id'])['state'])
+        self.assertEqual('unknown', next(b for b in self.node.snapshot()['bindings'] if b['id'] == keep['id'])['state'])
 
     def test_binding_remove_by_native_and_app_and_hub_removal_is_scoped_to_owning_device(self):
         binding = self.bind()
@@ -955,13 +955,13 @@ class RollupTests(NodeTests):
         self.bind()
         snap = self.node.snapshot()
         general = self.room(snap, 'general')
-        self.assertEqual('idle', general['rollup']['state'])
+        self.assertEqual('unknown', general['rollup']['state'])
         self.assertEqual(0, general['rollup']['needs'])
 
     def test_empty_default_general_room_rolls_up_cleanly(self):
         snap = self.node.snapshot()
         general = self.room(snap, 'general')
-        self.assertEqual('idle', general['rollup']['state'])
+        self.assertEqual('unknown', general['rollup']['state'])
         self.assertEqual(0, general['rollup']['needs'])
         self.assertEqual(0, snap['needsYou'])
         self.assertEqual(0, snap['activeCount'])
