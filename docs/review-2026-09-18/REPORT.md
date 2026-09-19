@@ -53,6 +53,16 @@ track overlapping busy state. Room mutations cannot race pending actions. See
 Original R05/R06 findings below are historical evidence. Drafts are session-memory
 only. No deployment/live-data access. Stop before B4; all other open findings untouched.
 
+## B4 implementation follow-up — 2026-09-19
+
+R04, R09, R11 and R12 are now **FIXED in source**. R10's definite enqueue rejection
+is fixed; its timeout portion remains B6. Reviews preserve results unless artifact,
+exact revision or base changes; assignments are fixed, completion evidence required,
+claims read-only, and the review opener corrected. See [B4](b4-safe-workflow.md):
+**14 B4 browser + 31 B2/B3 tests passed**, **205 passed in 25.60s**, desktop
+**tsc --noEmit exit 0**. Original findings below remain historical evidence.
+No deployment/live-data access. Stop before B5; all other findings untouched.
+
 ## Findings register
 
 Open unless labelled **FIXED**. Duplicate phase findings are consolidated; detailed
