@@ -73,6 +73,17 @@ regressions passed**, **211 passed in 27.07s**, desktop **tsc --noEmit exit 0**.
 Original findings remain historical evidence; R24 palette semantics remain B8.
 No deployment/live-data access. Stop before B6; all other findings untouched.
 
+## B6 implementation follow-up — 2026-09-19
+
+R08, R10’s remaining timeout portion, R19 and R20 are now **FIXED in source**.
+Typed versioned control envelopes, 8-second browser/native bounds, independent
+operational health and scoped safe errors replace the traced error gaps. Workflow
+status checks never re-enqueue an uncertain save. See [B6](b6-error-lifecycle.md):
+**79 frontend tests passed**, **219 passed in 30.12s**, desktop **tsc --noEmit
+exit 0**, isolated native **cargo check --locked exit 0**. Legacy bridge/protocol
+wire compatibility is retained. No installed-app build/replacement or live-data
+access. Stop before B7; original findings below remain historical evidence.
+
 ## Findings register
 
 Open unless labelled **FIXED**. Duplicate phase findings are consolidated; detailed

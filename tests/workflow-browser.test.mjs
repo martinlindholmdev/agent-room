@@ -28,7 +28,7 @@ const fixture = {
   room:'general', activeRoom:'general', rooms:[{id:'general',title:'General'},{id:'other',title:'Other'}],
   online:true, paused:false, events:[], sessions:[], bindings:[], objects:[], receipts:[], outbox:[], devices:[], pairing:[], requests:[],
 };
-const respond = (route, value) => route.fulfill({contentType:'application/json', body:JSON.stringify(value)});
+const respond = (route, value) => route.fulfill({contentType:'application/json', body:JSON.stringify(value.error && !('configured' in value) ? {ok:false,error:{code:value.acceptance === 'rejected' ? 'rejected' : 'unavailable',acceptance:value.acceptance || 'uncertain'}} : {ok:true,result:value})});
 async function waitFor(page, selector, text) {
   await page.waitForFunction(({selector, text}) => document.querySelector(selector)?.textContent.includes(text), {selector, text});
 }
@@ -43,7 +43,7 @@ async function setup(object=review,extra=()=>false){
  const page=await pageWith((route,req)=>{
   requests.push(req);if(extra(route,req))return;
   if(req.action==='snapshot')return respond(route,{...fixture,objects:object?[object]:[]});
-  return respond(route,req.action==='outbox-status'?{state:'sent'}:{});
+  return respond(route,req.action==='outbox-status'?{id:req.data.id,state:'sent'}:{id:'synthetic',state:'saved'});
  });
  await page.getByLabel('Message',{exact:true}).waitFor();
  if(object){
@@ -100,8 +100,8 @@ for(const outcome of ['rejected','lost','generic','failed','cancelled'])test('sa
   assert.equal(await page.getByLabel('Artifact',{exact:true}).isDisabled(),uncertain);
   if(!uncertain)await page.getByLabel('Checks and test evidence').fill('corrected');
   await page.getByRole('button',{name:uncertain?'Check save status':'Save review',exact:true}).click();await page.locator('dialog').waitFor({state:'detached'});
-  const sent=requests.filter(r=>r.action==='object').map(r=>r.data);assert.equal(sent.length,2);
-  if(uncertain)assert.deepEqual(sent[1],sent[0]);else{assert.notEqual(sent[1].event_id,sent[0].event_id);assert.equal(sent[1].data.checks,'corrected');}
+  const sent=requests.filter(r=>r.action==='object').map(r=>r.data);assert.equal(sent.length,uncertain?1:2);
+  if(uncertain)assert.equal(requests.filter(r=>r.action==='outbox-status').length,1);else{assert.notEqual(sent[1].event_id,sent[0].event_id);assert.equal(sent[1].data.checks,'corrected');}
  }finally{await page.close();}
 });
 for(const state of ['saved','unknown'])test('nonterminal status stays locked: '+state,async()=>{
@@ -114,6 +114,25 @@ for(const state of ['saved','unknown'])test('nonterminal status stays locked: '+
   assert.equal(await page.getByLabel('Artifact',{exact:true}).isDisabled(),true);
   settle=true;await page.getByRole('button',{name:'Check save status',exact:true}).click();
   await page.locator('dialog').waitFor({state:'detached'});
-  const sent=requests.filter(r=>r.action==='object');assert.deepEqual(sent[0].data,sent[1].data);
+  const sent=requests.filter(r=>r.action==='object');assert.equal(sent.length,1);
+ }finally{await page.close();}
+});
+
+for(const hung of ['object','outbox-status'])test('B6 bounded '+hung+' retains uncertainty and checks without reenqueue',async()=>{
+ let held, recover=false;
+ const {page,requests}=await setup(review,(route,req)=>{if(req.action===hung&&!recover){held=route;return true;}});
+ try{
+  await page.getByRole('button',{name:'Save review',exact:true}).click();
+  await page.locator('dialog p[role=alert]').waitFor({timeout:11000});
+  assert.match(await page.locator('dialog p[role=alert]').innerText(),/timed out.*uncertain/);
+  assert.equal(await page.getByLabel('Artifact',{exact:true}).isDisabled(),true);
+  assert.equal(requests.filter(r=>r.action==='object').length,1);
+  recover=true;
+  // A late response cannot close the form or automatically issue another send.
+  await respond(held,hung==='object'?{id:'late',state:'saved'}:{id:'late',state:'sent'}).catch(()=>{});
+  await page.waitForTimeout(100);assert.equal(await page.locator('dialog').count(),1);
+  await page.getByRole('button',{name:'Check save status',exact:true}).click();
+  await page.locator('dialog').waitFor({state:'detached'});
+  assert.equal(requests.filter(r=>r.action==='object').length,1);
  }finally{await page.close();}
 });

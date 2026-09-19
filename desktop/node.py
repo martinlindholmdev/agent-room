@@ -120,6 +120,7 @@ class Node(Database):
         self.binding_lifecycle = threading.RLock()
         self.online = False
         self.error = ''
+        self.health = {}
         self.stop = threading.Event()
         self.work = threading.Event()
         self.bridge_condition = threading.Condition()
@@ -469,6 +470,7 @@ class Node(Database):
         # (and older cached data shapes) that only ever knew about one room.
         self.put('snapshot', snapshots.get(self.get('room', 'general'), {}))
         self.online, self.error = True, ''
+        self.health.pop('sync', None)
 
     def receive(self, events):
         # Commit complete network pages and stream cursor together. On crash before
@@ -587,6 +589,7 @@ class Node(Database):
                     backoff = 1
                 except Exception:
                     self.online, self.error = False, 'Connection unavailable. Messages remain saved on this Mac.'
+                    self.health['sync'] = True
                     backoff = min(30, backoff*2)
                 self.work.wait(backoff if not self.online else 1)
                 self.work.clear()
@@ -610,7 +613,9 @@ class Node(Database):
                         if more:
                             self.receive(more)
                     self.work.set()
+                    self.health.pop('stream', None)
                 except Exception:
+                    self.health['stream'] = True
                     self.stop.wait(3)
 
         def dispatch_loop():
@@ -623,7 +628,9 @@ class Node(Database):
                         paused = [b['id'] for b in self.bindings() if b.get('paused')]
                         dispatch_one(self.delivery, self.source_message, incoming, paused)
                         self.report()
+                        self.health.pop('delivery', None)
                 except Exception:
+                    self.health['delivery'] = True
                     self.error = 'Delivery needs attention. Inspect receipts; uncertain sends are not retried.'
                 self.stop.wait(.5)
         for fn in (send_loop, stream_loop, dispatch_loop):
@@ -800,6 +807,7 @@ class Node(Database):
         pending_requests = [r for r in self.requests() if r['state'] == 'pending']
         return dict(cached, configured=bool(self.get('mode')), mode=self.get('mode'), name=self.get('name', ''),
                     device=self.get('device'), room=active_room, activeRoom=active_room, online=self.online, error=self.error,
+                    health=[{'scope': scope} for scope in self.health.copy()],
                     paused=self.get('paused', False), hub_url=self.get('hub_url', ''), events=events,
                     outbox=outbox,
                     rooms=self.rollups(cached.get('rooms', []), bindings, pending_requests),

@@ -1,0 +1,73 @@
+export type Session = {
+  id: string;
+  native: string;
+  app: string;
+  title: string;
+  device: string;
+  device_name: string;
+  active: number;
+  bridge_connected?: boolean;
+  model?: string;
+  state?: string;
+  state_reported_at?: number;
+  last_contact_at?: number;
+  room?: string;
+};
+export type Event = {
+  id: string;
+  seq: number;
+  kind: string;
+  sender: string;
+  device: string;
+  created: number;
+  body: { text?: string; targets?: string[]; reply_to?: string };
+};
+export type ObjectItem = {
+  id: string;
+  kind: string;
+  version: number;
+  author: string;
+  data: Record<string, any>;
+};
+export type Receipt = {
+  message: string;
+  target: string;
+  state: string;
+  reason: string;
+};
+export type RoomRollup = { state: string; needs: number };
+export type Room = { id: string; title: string; rollup?: RoomRollup };
+export type Snapshot = {
+  configured: boolean;
+  mode: string;
+  name: string;
+  room: string;
+  activeRoom: string;
+  rooms: Room[];
+  device: string;
+  online: boolean;
+  error: string;
+  health?: {scope: "sync" | "stream" | "delivery"}[];
+  paused: boolean;
+  events: Event[];
+  sessions: Session[];
+  bindings: Session[];
+  pending_removals?: { id: string; title: string; app: string; room: string }[];
+  receipts: Receipt[];
+  objects: ObjectItem[];
+  outbox: { id: string; state: string; error: string; event: Event }[];
+  devices: { id: string; name: string; active: number; role: string }[];
+  pairing: { id: string; name: string; device: string; expires: number }[];
+  requests?: {
+    native: string;
+    app: string;
+    title: string;
+    directory: string;
+    requested: number;
+    state: string;
+    model?: string;
+    room?: string;
+  }[];
+  needsYou?: number;
+  activeCount?: number;
+};
