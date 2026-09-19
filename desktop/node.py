@@ -94,6 +94,7 @@ class Node(Database):
         CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, event TEXT, state TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS cache(seq INTEGER PRIMARY KEY, id TEXT UNIQUE, event TEXT);
         CREATE TABLE IF NOT EXISTS bindings(id TEXT PRIMARY KEY, data TEXT, paused INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS pending_removals(id TEXT PRIMARY KEY, data TEXT);
         CREATE TABLE IF NOT EXISTS offered(binding TEXT PRIMARY KEY, seq INTEGER DEFAULT 0, cursor INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, state TEXT);
         CREATE TABLE IF NOT EXISTS requests(native TEXT, app TEXT, title TEXT, directory TEXT,
@@ -115,6 +116,8 @@ class Node(Database):
         self.db.commit()
         self.hub = None
         self.allow_loopback = allow_loopback
+        # Serialize registration/removal without holding the database lock over I/O.
+        self.binding_lifecycle = threading.RLock()
         self.online = False
         self.error = ''
         self.stop = threading.Event()
@@ -132,6 +135,9 @@ class Node(Database):
             binding['generation'] += 1
             self.save_binding(binding)
             self.delivery.register(binding['id'], binding['room'], binding['app'], binding['app'], binding['native'] if binding['app'] == 'codex-queue' else '')
+        # Recover cleanup after a crash between intent commit and delivery cleanup.
+        for binding in self.pending_removals():
+            self.delivery.forget(binding['id'], binding['room'])
         self.threads = []
 
     def get(self, key, default=None):
@@ -222,6 +228,14 @@ class Node(Database):
             self.db.execute('INSERT INTO bindings VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,paused=excluded.paused', (binding['id'], encoded(binding), int(binding.get('paused', False))))
 
     def bind(self, data):
+        with self.binding_lifecycle:
+            # Settle the old incarnation before reusing its hub identity.
+            for pending in self.pending_removals():
+                if pending['native'] == data['native'].strip() and pending['app'] == data['app']:
+                    self.settle_removal(pending)
+            return self._bind(data)
+
+    def _bind(self, data):
         native, app = data['native'].strip(), data['app']
         directory = data.get('directory', '').strip()
         room = data.get('room') or self.get('room', 'general')
@@ -280,47 +294,60 @@ class Node(Database):
         if identity:
             return identity
         native, app = data.get('native'), data.get('app')
-        match = next((b for b in self.bindings() if b['native'] == native and b['app'] == app), None)
+        match = next((b for b in self.bindings() + self.pending_removals() if b['native'] == native and b['app'] == app), None)
         return match['id'] if match else None
 
     def set_binding_state(self, identity, state):
         """Explicit self-report only. Detection is clever; being told is
         sturdier, so this never infers presence from activity."""
         require(state in PRESENCE_STATES, 'invalid presence state')
-        binding = self.binding(identity)
-        binding['state'] = state
-        self.save_binding(binding)
+        # A self-report racing removal must not reinsert a deleted binding.
+        with self.lock:
+            binding = self.binding(identity)
+            binding['state'] = state
+            self.save_binding(binding)
         self.work.set()
         return {'id': identity, 'state': state}
 
-    def binding_remove(self, identity):
-        """Disconnect a session locally and at the hub. Idempotent: removing a
-        binding that is already gone is a no-op, not an error, so a stale UI
-        click or a double-remove never surfaces a failure."""
-        binding = next((b for b in self.bindings() if b['id'] == identity), None)
-        if binding is None:
-            return {'removed': False}
-        try:
-            self.call('session-remove', {'session': identity, 'room': binding['room']})
-        except Exception:
-            pass  # Best-effort: the local disconnect must still succeed even offline.
-        # Hold self.lock across the local delete AND delivery.forget, and take
-        # it around route_cache's own bindings snapshot + route() calls too
-        # (see route_cache). Otherwise a route_cache pass reading a stale
-        # bindings dict just before this delete can land its delivery.route()
-        # insert just after forget() ran, leaving an orphan delivery row that
-        # report() would have no binding to attribute a receipt to.
+    def pending_removals(self):
+        return [json.loads(r['data']) for r in self.rows('SELECT data FROM pending_removals')]
+
+    def settle_removal(self, binding):
+        """Caller holds binding_lifecycle. A lost response leaves intent retryable."""
+        self.call('session-remove', {'session': binding['id'], 'room': binding['room']})
         with self.lock, self.db:
-            delivery_ids = [r['id'] for r in self.delivery.status(binding['room']) if r['session'] == identity]
-            self.db.execute('DELETE FROM bindings WHERE id=?', (identity,))
-            self.db.execute('DELETE FROM offered WHERE binding=?', (identity,))
-            if delivery_ids:
-                self.db.executemany('DELETE FROM reports WHERE id=?', [(d,) for d in delivery_ids])
-            self.delivery.forget(identity, binding['room'])
-        self.bridge_leases.pop(identity, None)
-        self.bridge_seen.pop(identity, None)
-        self.work.set()
-        return {'removed': True, 'id': identity}
+            self.db.execute('DELETE FROM pending_removals WHERE id=?', (binding['id'],))
+
+    def binding_remove(self, identity):
+        """Commit local disconnect and hub intent together, then attempt settlement.
+
+        Keep history/cache/outbox intact; discard only connection bookkeeping.
+        Pending intent survives offline failures and process restarts.
+        """
+        with self.binding_lifecycle:
+            binding = next((b for b in self.bindings() if b['id'] == identity), None)
+            pending = next((b for b in self.pending_removals() if b['id'] == identity), None)
+            if binding is None and pending is None:
+                return {'removed': False}
+            if binding is not None:
+                # Same lock as route_cache: no stale routing insert after forget.
+                with self.lock:
+                    with self.db:
+                        self.db.execute('INSERT OR IGNORE INTO pending_removals VALUES(?,?)', (identity, encoded(binding)))
+                        delivery_ids = [r['id'] for r in self.delivery.status(binding['room']) if r['session'] == identity]
+                        self.db.execute('DELETE FROM bindings WHERE id=?', (identity,))
+                        self.db.execute('DELETE FROM offered WHERE binding=?', (identity,))
+                        self.db.executemany('DELETE FROM reports WHERE id=?', [(d,) for d in delivery_ids])
+                    # Intent is durable before touching the separate delivery DB.
+                    self.delivery.forget(identity, binding['room'])
+                self.bridge_leases.pop(identity, None)
+                self.bridge_seen.pop(identity, None)
+            self.work.set()
+            try:
+                self.settle_removal(binding or pending)
+            except Exception:
+                return {'removed': True, 'id': identity, 'pending': True}
+            return {'removed': True, 'id': identity}
 
     def request_create(self, native, app, title, directory='', model=''):
         """An unbound session asks for admission. The human approves in the app."""
@@ -365,7 +392,7 @@ class Node(Database):
         """Every room this device currently has local content in: the active room
         (shown in the UI) plus any room a local binding is attached to, so a
         background agent's room keeps syncing even while the UI looks elsewhere."""
-        return sorted({b['room'] for b in self.bindings()} | {self.get('room', 'general')})
+        return sorted({b['room'] for b in self.bindings() + self.pending_removals()} | {self.get('room', 'general')})
 
     def cursor_for(self, room):
         cursors = self.get('cursors') or {}
@@ -380,19 +407,22 @@ class Node(Database):
         if not self.get('mode'):
             return
         self.settle_board_reports()
-        for binding in self.bindings():
-            self.call('bind', {k: binding[k] for k in ('native', 'app', 'title', 'room', 'generation')})
+        rooms = self.rooms_in_use()
+        with self.binding_lifecycle:
+            for pending in self.pending_removals():
+                self.settle_removal(pending)
+            for binding in self.bindings():
+                self.call('bind', {k: binding[k] for k in ('native', 'app', 'title', 'room', 'generation')})
         for row in self.rows("SELECT * FROM outbox WHERE state='saved' ORDER BY rowid LIMIT 100"):
             with self.lock, self.db:
                 claimed = self.db.execute("UPDATE outbox SET state='sending' WHERE id=? AND state='saved'", (row['id'],)).rowcount
             if not claimed:
                 continue
             event = json.loads(row['event'])
-            if event['sender']:
-                # Unsent events from the same native identity can renew the fencing
-                # generation; ID/body/target remain unchanged.
-                event['generation'] = self.binding(event['sender'])['generation']
             try:
+                if event['sender']:
+                    # Fail visibly and preserve unsent text from a removed sender.
+                    event['generation'] = self.binding(event['sender'])['generation']
                 result = self.call('event', event)
             except ValueError as exc:
                 with self.lock, self.db:
@@ -404,7 +434,6 @@ class Node(Database):
             else:
                 with self.lock, self.db:
                     self.db.execute("UPDATE outbox SET state='sent',error='' WHERE id=?", (row['id'],))
-        rooms = self.rooms_in_use()
         for room in rooms:
             events = self.call('events', {'room': room, 'after': self.cursor_for(room)})['events']
             self.receive(events)
@@ -753,6 +782,7 @@ class Node(Database):
                     outbox=outbox,
                     rooms=self.rollups(cached.get('rooms', []), bindings, pending_requests),
                     requests=pending_requests,
+                    pending_removals=[{k: b[k] for k in ('id', 'title', 'app', 'room')} for b in self.pending_removals()],
                     bindings=[dict(b, bridge_connected=time.monotonic()-self.bridge_seen.get(b['id'], -1000)<30) for b in bindings],
                     needsYou=len(pending_requests) + sum(1 for b in bindings if b.get('state') == 'blocked'),
                     activeCount=sum(1 for b in bindings if b.get('state') == 'working'))

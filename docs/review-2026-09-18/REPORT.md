@@ -31,6 +31,14 @@ implementation terminology, and keyboard/contrast defects make the interface har
 use. A large rewrite is not the next step: fix lifecycle/state correctness in bounded
 PRs, add browser/contract regressions, then extract components as those areas stabilize.
 
+## B1 implementation follow-up — 2026-09-19
+
+R01 is now fixed in source by B1; the original assessment below is retained as
+historical evidence. Durable intent, restart/reconnect settlement, pending UI and
+history-preservation regressions are documented in [B1](b1-durable-disconnect.md).
+Checks: **198 passed in 25.60s**, desktop **tsc --noEmit exit 0**. No deployment or
+live-data access. B2 and all other open findings remain untouched.
+
 ## Findings register
 
 Open unless labelled **FIXED**. Duplicate phase findings are consolidated; detailed
