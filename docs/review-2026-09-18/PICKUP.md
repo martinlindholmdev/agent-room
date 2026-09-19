@@ -1,23 +1,22 @@
-# PICKUP — B3 scoped actions/drafts implemented; stop before B4
+# PICKUP — B4 safe workflow editing implemented; stop before B5
 
-Done: Review phases 1–7 and B1–B3 are implemented in source. B3 fixes R05/R06 with
-per-room retained text/recipient/reply/draft IDs, dialog-instance completion guards,
-and operation-set busy tracking. Bind/pair followups cannot replace newer dialogs.
-Room mutations and pending actions are mutually exclusive because the helper uses
-a global selected room. Draft retention is in-memory for this app session, not across restart.
+Done: Review phases 1–7 and B1–B4 are implemented in source. B4 fixes R04, R09,
+R11 and R12, plus R10's definite-enqueue-rejection slice. Review verdict/findings
+survive metadata and object-version-counter edits; only artifact, exact revision
+or base revision changes invalidate them. Existing assignments are fixed; resolved
+work requires evidence; claims are read-only; the review opener is corrected.
+Explicit rejection unlocks editing; uncertain acceptance retains exact ID/payload.
+R10 request timeouts remain B6, together with broader error lifecycle/contracts.
 
-Evidence: phase6-architecture.md P6-02 and phase3-results.md journey 08;
-b3-scoped-actions-drafts.md describes implementation, tests and limits. **6 B3 state
-+ 8 synthetic Chrome tests passed**; **17 B2 tests also passed**, combined **31/31**.
-Full checks: **198 passed in 26.52s**, desktop **tsc --noEmit exit 0**. Browser tests
-use intercepted control responses and isolated dev servers, not a helper or installed app.
-B1/B2 evidence remains in b1-durable-disconnect.md and b2-ordered-snapshots.md.
+Evidence: b4-safe-workflow.md and its references. **14 B4 synthetic Chrome tests +
+31 B2/B3 regressions passed (45/45)**; **205 passed in 25.60s**, desktop
+**tsc --noEmit exit 0**. Browser tests intercept control responses, not a live helper.
+B1–B3 evidence and session-only draft-retention limits remain in their batch notes.
 
-Next: **Stop. B4 has not started.** In a fresh conversation, owner may authorize B4
-safe workflow editing (R04, R09–R12). Read AGENTS.md, REPORT.md and this note; start
-a fresh branch from updated main. Owner must choose review invalidation policy;
-report recommends invalidation only when review artifact/version changes. Other
-findings remain open; B6 owns action-local errors and timeouts.
+Next: **Stop. B5 has not started.** In a fresh conversation, owner may authorize B5
+honest presence (R03, presence portion of R24). Read AGENTS.md, REPORT.md and this
+note; start a fresh branch from updated main. Owner must choose stale threshold/
+wording; do not auto-delete idle connections. Other findings remain untouched.
 
 Safety: No installed-app rebuild/replacement or live-data access. Owner controls deployment.
 Never commit credentials, ready.json or work/ contents. gh is at ~/.local/bin/gh.

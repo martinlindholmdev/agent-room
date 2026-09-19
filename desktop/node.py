@@ -830,7 +830,17 @@ class Node(Database):
         if action == 'send':
             return self.enqueue('message', {'text': data['text'], 'targets': data.get('targets', []), 'reply_to': data.get('reply_to')}, event_id=data.get('id'))
         if action == 'object':
-            return self.enqueue('object', data, event_id=data.get('event_id'))
+            # Only explicit rejection with no persisted event permits editing.
+            # Existing IDs and unexpected failures remain uncertain to the caller.
+            with self.lock:
+                try:
+                    return self.enqueue('object', data, event_id=data.get('event_id'))
+                except ValueError:
+                    identity = data.get('event_id')
+                    if isinstance(identity, str) and identity and not self.rows('SELECT id FROM outbox WHERE id=?', (identity,)):
+                        return {'error': 'Save not queued. Check the fields and available outbox space.',
+                                'acceptance': 'rejected'}
+                    raise
         if action == 'outbox-status':
             rows = self.rows('SELECT id,state,error AS reason FROM outbox WHERE id=?', (data['id'],))
             require(rows, 'saved operation not found')

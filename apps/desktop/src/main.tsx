@@ -202,7 +202,7 @@ async function api(action: string, data: Record<string, unknown> = {}) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, data }),
       }).then((r) => r.json());
-  if (result.error) throw Error(result.error);
+  if (result.error) throw Object.assign(Error(result.error), { enqueueRejected: action === "object" && result.acceptance === "rejected" });
   return result;
 }
 type PaletteAction = {
@@ -273,7 +273,7 @@ function Palette({
     );
   s.objects.forEach((o) => {
     const label =
-      o.data.title || o.data.objective || o.data.artifact || o.data.text || "";
+      o.data.title || o.data.objective || o.data.artifact || o.data.text || o.data.scope || "";
     if (!matches(String(label), o.kind)) return;
     actions.push({
       id: "object-" + o.id,
@@ -1542,7 +1542,7 @@ function App() {
                         <button
                           onClick={() => {
                             setEditing(null);
-                            setDialog("workflow");
+                            setDialog("workflow:review");
                           }}
                         >
                           Request a review <ArrowUpRight size={14} />
@@ -2484,12 +2484,13 @@ function Workflow({
 }) {
   const [kind, setKind] = useState(editing?.kind || initialKind || "work");
   const d = editing?.data || {};
+  const [workState, setWorkState] = useState(d.state || "proposed");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const submitted = useRef<any>(null);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const submit = async (data: any) => {
     setSaving(true);
     setSaveError("");
@@ -2498,7 +2499,15 @@ function Workflow({
       if (!pendingId) submitted.current = { ...data, event_id: id };
       setPendingId(id);
       // Retrying the exact event ID is safe even after a lost enqueue response.
-      await onSave(submitted.current);
+      try {
+        await onSave(submitted.current);
+      } catch (e) {
+        if (mounted.current && (e as { enqueueRejected?: boolean })?.enqueueRejected) {
+          setPendingId(null);
+          submitted.current = null;
+        }
+        throw e;
+      }
       if (!mounted.current) return;
       for (let attempt = 0; attempt < 12; attempt++) {
         const result = await api("outbox-status", { id });
@@ -2515,6 +2524,17 @@ function Workflow({
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally { setSaving(false); }
   };
+  if (kind === "claim") return (
+    <Dialog title="Claim · read-only" onClose={onClose}>
+      <p>Claims are managed by their owning conversation through room tools.</p>
+      <dl>
+        <dt>Scope</dt><dd>{d.scope}</dd>
+        <dt>Owner</dt><dd>{sessions.find((p) => p.id === editing?.author)?.title || editing?.author}</dd>
+        <dt>Lease expires</dt><dd>{typeof d.expires === "number" ? new Date(d.expires * 1000).toLocaleString() : "Unknown"}</dd>
+        <dt>Conflicts</dt><dd>{d.conflicts?.join(", ") || "None"}</dd>
+      </dl>
+    </Dialog>
+  );
   return (
     <Dialog
       title={editing?.version ? "Update " + kind : "New request"}
@@ -2534,7 +2554,7 @@ function Workflow({
           if (kind === "work")
             data = {
               title: value("title"),
-              owner: value("owner"),
+              owner: editing?.version ? d.owner : value("owner"),
               scope: value("scope"),
               state: value("state"),
               evidence: value("evidence"),
@@ -2546,10 +2566,10 @@ function Workflow({
               artifact: value("artifact"),
               revision: value("revision"),
               base: value("base"),
-              reviewer: value("owner"),
-              verdict: "pending",
+              reviewer: editing?.version ? d.reviewer : value("owner"),
+              verdict: editing?.version && ["artifact", "revision", "base"].every((k) => value(k) === d[k]) ? d.verdict : "pending",
               checks: value("checks"),
-              findings: "",
+              findings: editing?.version && ["artifact", "revision", "base"].every((k) => value(k) === d[k]) ? d.findings : "",
             };
           void submit({
             id: editing?.id || crypto.randomUUID(),
@@ -2664,7 +2684,7 @@ function Workflow({
                 </label>
                 <p className="small">
                   Only the exact reviewer can issue a verdict through their room
-                  tools. Changing the artifact resets approval.
+                  tools. Verdict and findings are preserved unless the artifact, exact revision, or base revision changes. Those changes reset the verdict to pending and clear findings.
                 </p>
               </>
             )}
@@ -2673,11 +2693,15 @@ function Workflow({
               <select
                 name="owner"
                 defaultValue={d.owner || d.reviewer || ""}
+                disabled={!!editing?.version}
                 required
               >
                 <option value="" disabled>
                   Choose an exact conversation
                 </option>
+                {editing?.version && !sessions.some((p) => p.id === (d.owner || d.reviewer)) && (
+                  <option value={d.owner || d.reviewer}>{d.owner || d.reviewer} · unavailable conversation</option>
+                )}
                 {sessions.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.title} · {appName(p.app)}
@@ -2685,11 +2709,12 @@ function Workflow({
                 ))}
               </select>
             </label>
+            {!!editing?.version && <p className="small">Assignment is fixed. Create a new request to choose a different conversation.</p>}
             {kind === "work" && (
               <>
                 <label>
                   Status
-                  <select name="state" defaultValue={d.state || "proposed"}>
+                  <select name="state" value={workState} onChange={(e) => setWorkState(e.target.value)}>
                     {[
                       "proposed",
                       "accepted",
@@ -2707,6 +2732,7 @@ function Workflow({
                   Completion evidence
                   <textarea
                     name="evidence"
+                    required={workState === "resolved"}
                     defaultValue={d.evidence}
                     rows={2}
                   />
