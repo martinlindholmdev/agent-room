@@ -28,7 +28,7 @@ const fixture = {
   room:'general', activeRoom:'general', rooms:[{id:'general',title:'General'},{id:'other',title:'Other'}],
   online:true, paused:false, events:[], sessions:[], bindings:[], objects:[], receipts:[], outbox:[], devices:[], pairing:[], requests:[],
 };
-const respond = (route, value) => route.fulfill({contentType:'application/json', body:JSON.stringify(value)});
+const respond = (route, value) => route.fulfill({contentType:'application/json', body:JSON.stringify(value.error && !('configured' in value) ? {ok:false,error:{code:value.acceptance === 'rejected' ? 'rejected' : 'unavailable',acceptance:value.acceptance || 'uncertain'}} : {ok:true,result:value})});
 async function waitFor(page, selector, text) {
   await page.waitForFunction(({selector, text}) => document.querySelector(selector)?.textContent.includes(text), {selector, text});
 }

@@ -1,22 +1,25 @@
-# PICKUP — B5 honest presence implemented; stop before B6
+# PICKUP — B6 error lifecycle implemented; stop before B7
 
-Done: Review phases 1–7 and B1–B5 are implemented in source. B5 fixes R03 and
-R24's presence portion. Last-reported work and contact have separate persisted
-wall-clock timestamps. At five minutes, contact reads “No recent contact” without
-changing the work report. Missing evidence is unknown; on-demand silence is
-explicitly expected. Accessible text replaces presence-only dots/tooltips. No idle
-connection is automatically removed. Remote evidence remains unknown, not liveness.
+Done: Review phases 1–7 and B1–B6 are implemented in source. B6 fixes R08,
+R10's remaining timeout portion, R19 and R20. Typed versioned control envelopes
+separate result/error/health; browser and native requests are bounded at 8 seconds.
+Only definite rejection unlocks correction. Uncertain workflow acceptance retains
+its event ID; Check status is read-only and never re-enqueues. Scoped action errors
+and independent operational health are visible without raw diagnostic credentials.
 
-Evidence: [b5-honest-presence.md](b5-honest-presence.md) and its references.
-**10 B5 frontend tests + 45 B2/B3/B4 regressions passed**; **211 passed in 27.07s**;
-desktop **tsc --noEmit exit 0**. Chrome tests use synthetic control responses;
-Python tests use isolated temporary homes under work/. No installed-app claim.
-B1–B4 notes retain prior evidence and session-only draft-retention limits.
+Evidence: [b6-error-lifecycle.md](b6-error-lifecycle.md) and its referenced Phase 6
+trace. **79 frontend tests passed** (24 new B6 + all 55 prior B2–B5),
+**219 passed in 30.12s** (python3 -m pytest tests -q), desktop
+**tsc --noEmit exit 0**, native **cargo check --locked exit 0** with target under
+work/b6-cargo. Chrome uses synthetic control responses; Python uses fake HTTP nodes
+or temporary homes under work/. No installed-app/webview certification. Existing
+bridge/protocol callers retain their legacy wire format. Prior notes retain
+session-only draft/form-tracking limitations.
 
-Next: **Stop. B6 has not started.** In a fresh conversation, owner may authorize
-B6 error lifecycle (R08, R10 timeout portion, R19, R20). Read AGENTS.md, REPORT.md
-and this note; branch from updated main. R24 palette semantics remain B8. Other
-findings remain untouched; do not auto-retry uncertain native sends.
+Next: **Stop. B7 has not started.** A fresh owner-authorized conversation may take
+B7 Inbox consistency (R13, R14). Read AGENTS.md, REPORT.md and this note; branch
+from updated main. Define Needs you scope and failed-item dismissal policy first.
+Never automatically retry uncertain native sends. R24 palette semantics remain B8.
 
 Safety: No installed-app rebuild/replacement or live-data access. Owner controls deployment.
 Never commit credentials, ready.json or work/ contents. gh is at ~/.local/bin/gh.

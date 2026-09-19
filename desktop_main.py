@@ -14,6 +14,7 @@ from pathlib import Path
 
 from desktop.node import Node, hub_call
 from desktop.secrets import Vault
+from desktop.control_contract import failure, result_envelope
 
 
 def default_root():
@@ -38,6 +39,9 @@ def handler(node, token, protocol_only=False):
             pass  # No request bodies, URLs or native credentials in diagnostics.
 
         def send(self, code, body):
+            if getattr(self, 'contract', False) and not (isinstance(body, dict) and 'ok' in body):
+                body = failure('unauthorized' if code == 401 else 'rejected' if code in (403, 404, 413) else 'unavailable',
+                               'rejected' if code in (401, 403, 404, 413) else 'uncertain')
             payload = json.dumps(body, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header('Content-Type', 'application/json')
@@ -54,7 +58,8 @@ def handler(node, token, protocol_only=False):
             self.send(404, {'error': 'use the authenticated protocol'})
 
         def do_POST(self):
-            self.connection.settimeout(35)
+            self.contract = False
+            self.connection.settimeout(8)
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 250_000:
@@ -65,6 +70,7 @@ def handler(node, token, protocol_only=False):
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError('JSON object required')
+                self.contract = not protocol_only and body.get('contract') == 1
                 credential = self.headers.get('Authorization', '').removeprefix('Bearer ')
                 if protocol_only:
                     if not self.path.startswith('/v1/') or not node.hub:
@@ -76,7 +82,7 @@ def handler(node, token, protocol_only=False):
                     if self.path != '/control':
                         return self.send(404, {'error': 'no such local route'})
                     result = node.control(body['action'], body.get('data', {}))
-                self.send(200, result)
+                self.send(200, result_envelope(body['action'], result) if self.contract else result)
             except (ValueError, KeyError, TypeError, AttributeError):
                 self.send(400, {'error': 'Request rejected. Check exact session, pairing, fields and revision.'})
             except Exception:

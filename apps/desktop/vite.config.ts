@@ -38,6 +38,8 @@ export default defineConfig({
               `http://127.0.0.1:${ready.port}/control`,
               {
                 method: "POST",
+                signal: AbortSignal.timeout(8000),
+                redirect: "error",
                 headers: {
                   Authorization: `Bearer ${ready.token}`,
                   "Content-Type": "application/json",
@@ -50,7 +52,7 @@ export default defineConfig({
             res.end(await result.text());
           } catch {
             res.statusCode = 503;
-            res.end(JSON.stringify({ error: "Local helper unavailable" }));
+            res.end(JSON.stringify({ ok: false, error: { code: "unavailable", acceptance: "uncertain" } }));
           }
         });
       },

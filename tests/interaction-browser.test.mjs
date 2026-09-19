@@ -28,7 +28,7 @@ const fixture = {
   room:'general', activeRoom:'general', rooms:[{id:'general',title:'General'},{id:'other',title:'Other'}],
   online:true, paused:false, events:[], sessions:[], bindings:[], objects:[], receipts:[], outbox:[], devices:[], pairing:[], requests:[],
 };
-const respond = (route, value) => route.fulfill({contentType:'application/json', body:JSON.stringify(value)});
+const respond = (route, value) => route.fulfill({contentType:'application/json', body:JSON.stringify(value.error && !('configured' in value) ? {ok:false,error:{code:value.acceptance === 'rejected' ? 'rejected' : 'unavailable',acceptance:value.acceptance || 'uncertain'}} : {ok:true,result:value})});
 async function waitFor(page, selector, text) {
   await page.waitForFunction(({selector, text}) => document.querySelector(selector)?.textContent.includes(text), {selector, text});
 }
@@ -47,7 +47,7 @@ async function roomPage(extra = () => false) {
     if (extra(route, req)) return;
     if (req.action === 'room-select') {room = req.data.room; return respond(route,{room});}
     if (req.action === 'snapshot') return respond(route,{...fixture, room, activeRoom:room, sessions:[agent(room)],events:[message(room)]});
-    return respond(route,{});
+    return respond(route,{id:'synthetic',state:'saved'});
   });
   await page.getByLabel('Message', {exact:true}).waitFor();
   return {page, requests};
@@ -188,4 +188,51 @@ test('late bind result cannot replace a newer dialog with connection setup', asy
     await page.waitForFunction(() => !document.querySelector('dialog .primary').disabled);
     assert.equal(await page.getByLabel('Room name',{exact:true}).inputValue(),'Keep this');
   } finally {await page.close();}
+});
+
+// B6 scoped errors and operational health.
+test('B6 concurrent failures persist independently through later success', async () => {
+ const held=[]; let fail=true;
+ const {page}=await roomPage((route,req)=>{if(req.action==='pause'&&fail){held.push(route);return true;}});
+ try {
+  await page.getByRole('button',{name:'Pause delivery',exact:true}).click();
+  await page.getByRole('button',{name:'Pause delivery',exact:true}).click();
+  while(held.length<2)await page.waitForTimeout(10);
+  await respond(held[0],{error:'PRIVATE'});await respond(held[1],{error:'PRIVATE'});
+  await page.waitForFunction(()=>document.querySelectorAll('.error-banner').length===2);
+  fail=false;await page.getByRole('button',{name:'Pause delivery',exact:true}).click();
+  await page.waitForFunction(()=>!document.querySelector('textarea').disabled);
+  assert.equal(await page.locator('.error-banner').count(),2);
+  assert.doesNotMatch(await page.locator('body').innerText(),/PRIVATE/);
+  await page.getByRole('button',{name:'Dismiss action error'}).first().click();
+  assert.equal(await page.locator('.error-banner').count(),1);
+ }finally{await page.close();}
+});
+test('B6 current form errors are visible inside modal, not leaked raw exceptions',async()=>{
+ const {page}=await roomPage((route,req)=>{if(req.action==='room-create'){void respond(route,{error:'PRIVATE'});return true;}});
+ try{
+  await page.getByRole('button',{name:'New room',exact:true}).click();await page.getByLabel('Room name',{exact:true}).fill('Draft');
+  await page.locator('dialog').getByRole('button',{name:'Create room'}).click();await page.locator('dialog [role=alert]').waitFor();
+  assert.match(await page.locator('dialog [role=alert]').innerText(),/room-create.*General/);
+  assert.doesNotMatch(await page.locator('body').innerText(),/PRIVATE/);
+ }finally{await page.close();}
+});
+test('B6 unexpected post-send callback failure is visible without raw text',async()=>{
+ const {page}=await roomPage();try{
+  await page.getByLabel('Message',{exact:true}).fill('Message');
+  await page.getByLabel('Message',{exact:true}).evaluate(e=>{e.focus=()=>{throw Error('PRIVATE');};});
+  await page.getByRole('button',{name:'Send message'}).click();await page.locator('.error-banner').waitFor();
+  assert.match(await page.locator('.error-banner').innerText(),/Unexpected action failure/);
+  assert.doesNotMatch(await page.locator('body').innerText(),/PRIVATE/);
+ }finally{await page.close();}
+});
+test('B6 delivery health remains visible through polling and clears on recovery',async()=>{
+ let degraded=true;
+ const {page}=await roomPage((route,req)=>{if(req.action==='snapshot'){void respond(route,{...fixture,error:'PRIVATE',health:degraded?[{scope:'delivery'}]:[]});return true;}});
+ try{
+  await page.locator('.error-banner').waitFor();assert.match(await page.locator('.error-banner').innerText(),/uncertain sends are not retried/);
+  await page.waitForTimeout(2000);assert.equal(await page.locator('.error-banner').count(),1);
+  assert.doesNotMatch(await page.locator('body').innerText(),/PRIVATE/);
+  degraded=false;await page.locator('.error-banner').waitFor({state:'detached'});
+ }finally{await page.close();}
 });

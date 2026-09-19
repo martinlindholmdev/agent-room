@@ -9,17 +9,38 @@ fn launch(binary: &PathBuf, root: &PathBuf) -> std::io::Result<Child> {
     Command::new(binary).arg("--home").arg(root).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
 }
 
+fn control_failure(code: &str, acceptance: &str) -> Value {
+    json!({"ok": false, "error": {"code": code, "acceptance": acceptance}})
+}
+
 #[tauri::command]
-async fn control(state: tauri::State<'_, Runtime>, action: String, data: Value) -> Result<Value,String> {
-    // The renderer gets only this action allowlist, no arbitrary URLs or shell.
+async fn control(state: tauri::State<'_, Runtime>, action: String, data: Value) -> Result<Value, String> {
+    Ok(control_request(state.root.clone(), action, data).await)
+}
+
+async fn control_request(root: PathBuf, action: String, data: Value) -> Value {
     const ALLOWED: &[&str] = &["snapshot","create","join-request","join-finish","bind","request-create","request-decide","send","object","outbox-status","pause","pair-create","pair-approve","revoke","cancel","backup","unlock","room-select","room-create","room-rename","binding-state","binding-remove"];
-    if !ALLOWED.contains(&action.as_str()) { return Err("Unsupported action".into()); }
-    let ready: Value = serde_json::from_slice(&std::fs::read(state.root.join("ready.json")).map_err(|_| "Starting local helper…")?).map_err(|_| "Helper is restarting")?;
-    let port = ready["port"].as_u64().ok_or("Helper port missing")?;
-    let token = ready["token"].as_str().ok_or("Helper connection missing")?;
-    let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(35)).build().map_err(|_| "Connection unavailable")?;
-    let response = client.post(format!("http://127.0.0.1:{port}/control")).bearer_auth(token).json(&json!({"action":action,"data":data})).send().await.map_err(|_| "Local helper is reconnecting. Saved messages are retained.")?;
-    response.json().await.map_err(|_| "Invalid helper response".into())
+    if !ALLOWED.contains(&action.as_str()) { return control_failure("rejected", "rejected"); }
+    let ready = std::fs::read(root.join("ready.json")).ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let Some(ready) = ready else { return control_failure("unavailable", "rejected"); };
+    let (Some(port), Some(token)) = (ready["port"].as_u64(), ready["token"].as_str()) else {
+        return control_failure("unavailable", "rejected");
+    };
+    let client = match reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(8)).build() {
+        Ok(client) => client, Err(_) => return control_failure("unavailable", "rejected"),
+    };
+    let response = match client.post(format!("http://127.0.0.1:{port}/control")).bearer_auth(token)
+        .json(&json!({"action":action,"data":data,"contract":1})).send().await {
+        Ok(response) => response,
+        Err(e) => return control_failure(if e.is_timeout() { "timeout" } else { "unavailable" }, "uncertain"),
+    };
+    let status = response.status();
+    match response.json::<Value>().await {
+        Ok(value) if value["ok"].is_boolean() && (status.is_success() || value["ok"] == false) => value,
+        _ => control_failure("invalid_response", "uncertain"),
+    }
 }
 
 #[tauri::command]

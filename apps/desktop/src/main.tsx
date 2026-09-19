@@ -32,78 +32,8 @@ import { presenceText, type Presence } from "./presence";
 import { createInteractionState } from "./interaction-state";
 import { createSnapshotController } from "./snapshot-controller";
 
-type Session = {
-  id: string;
-  native: string;
-  app: string;
-  title: string;
-  device: string;
-  device_name: string;
-  active: number;
-  bridge_connected?: boolean;
-  model?: string;
-  state?: string;
-  state_reported_at?: number;
-  last_contact_at?: number;
-  room?: string;
-};
-type Event = {
-  id: string;
-  seq: number;
-  kind: string;
-  sender: string;
-  device: string;
-  created: number;
-  body: { text?: string; targets?: string[]; reply_to?: string };
-};
-type ObjectItem = {
-  id: string;
-  kind: string;
-  version: number;
-  author: string;
-  data: Record<string, any>;
-};
-type Receipt = {
-  message: string;
-  target: string;
-  state: string;
-  reason: string;
-};
-type RoomRollup = { state: string; needs: number };
-type Room = { id: string; title: string; rollup?: RoomRollup };
-type Snapshot = {
-  configured: boolean;
-  mode: string;
-  name: string;
-  room: string;
-  activeRoom: string;
-  rooms: Room[];
-  device: string;
-  online: boolean;
-  error: string;
-  paused: boolean;
-  events: Event[];
-  sessions: Session[];
-  bindings: Session[];
-  pending_removals?: { id: string; title: string; app: string; room: string }[];
-  receipts: Receipt[];
-  objects: ObjectItem[];
-  outbox: { id: string; state: string; error: string; event: Event }[];
-  devices: { id: string; name: string; active: number; role: string }[];
-  pairing: { id: string; name: string; device: string; expires: number }[];
-  requests?: {
-    native: string;
-    app: string;
-    title: string;
-    directory: string;
-    requested: number;
-    state: string;
-    model?: string;
-    room?: string;
-  }[];
-  needsYou?: number;
-  activeCount?: number;
-};
+import type { Session, Event, ObjectItem, Room, Snapshot } from "./types";
+import { createControl, bounded, visibleError, ControlError, type Action, type Requests, type Results } from "./control";
 const empty: Snapshot = {
   configured: false,
   mode: "",
@@ -189,17 +119,7 @@ const receiptName = (state: string, target?: Session) =>
         saved: "Saved on this Mac",
         failed: "Needs attention",
       })[state] || state;
-async function api(action: string, data: Record<string, unknown> = {}) {
-  const result = isTauri()
-    ? await invoke<any>("control", { action, data })
-    : await fetch("/control", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, data }),
-      }).then((r) => r.json());
-  if (result.error) throw Object.assign(Error(result.error), { enqueueRejected: action === "object" && result.acceptance === "rejected" });
-  return result;
-}
+const api = createControl(isTauri() ? (action, data) => invoke("control", { action, data }) : undefined);
 type PaletteAction = {
   id: string;
   label: string;
@@ -371,6 +291,7 @@ function IdentityChip({ label, model, binding }: {
     </span>
   );
 }
+const DialogErrors = React.createContext<React.ReactNode>(null);
 function Dialog({
   title,
   children,
@@ -399,6 +320,7 @@ function Dialog({
           <X size={18} />
         </button>
       </div>
+      {React.useContext(DialogErrors)}
       {children}
     </dialog>
   );
@@ -432,6 +354,22 @@ function App() {
   const interactions = useRef<ReturnType<typeof createInteractionState<Event>> | null>(null);
   if (!interactions.current) interactions.current = createInteractionState<Event>(() => renderInteractions(n => n + 1));
   const state = interactions.current;
+  const [issues, setIssues] = useState<{id: number; owner: number; room: string; action: string; message: string}[]>([]);
+  const issueId = useRef(0);
+  const reported = useRef(new WeakSet<object>());
+  const reportError = (action: string, e: unknown, owner = state.dialog, room = s.activeRoom) => {
+    if (e && typeof e === "object") {
+      if (reported.current.has(e)) return;
+      reported.current.add(e);
+    }
+    setIssues(current => [...current, {id: ++issueId.current, owner, room, action, message: visibleError(e)}]);
+  };
+  const issueList = (inline: boolean) => issues.filter(i => (dialog !== "" && i.owner === state.dialog) === inline).map(i => (
+    <div className="error-banner" role="alert" key={i.id}>
+      <span>{i.action} · {roomName(s.rooms, i.room)}: {i.message}</span>
+      <button className="icon" aria-label="Dismiss action error" onClick={() => setIssues(current => current.filter(item => item.id !== i.id))}><X size={15}/></button>
+    </div>
+  ));
   const busy = state.busy;
   const { text, target, reply } = state.draft(s.activeRoom);
   const setText = (text: string) => state.patch(s.activeRoom, { text });
@@ -446,7 +384,7 @@ function App() {
   const snapshots = useRef<ReturnType<typeof createSnapshotController<Snapshot>> | null>(null);
   if (!snapshots.current) {
     snapshots.current = createSnapshotController<Snapshot>(
-      async () => ({ ...empty, ...await api("snapshot") }),
+      async () => ({ ...empty, ...await api("snapshot", {}) }),
       (next) => {
         setS(next);
         setConnectionError("");
@@ -454,7 +392,7 @@ function App() {
         setConfirmed(true);
       },
       (e) => {
-        setConnectionError(String(e));
+        setConnectionError(visibleError(e));
         setHelperUnavailable(true);
         setS((current) => ({ ...current, online: false }));
       },
@@ -466,7 +404,7 @@ function App() {
     controller.start();
     void controller.refresh();
     const timer = setInterval(() => void controller.refresh(true), 1800);
-    if (isTauri()) void invoke("runtime_info").then(setRuntime);
+    if (isTauri()) void bounded(() => invoke("runtime_info")).then(setRuntime).catch(e => reportError("Runtime", e));
     return () => {
       clearInterval(timer);
       controller.stop();
@@ -504,35 +442,37 @@ function App() {
     }
     previous.current = s.events.length;
   }, [s.events.length, query]);
-  const act = async (
-    action: string,
-    data: Record<string, unknown> = {},
+  const act = async <A extends Action,>(
+    action: A,
+    data: Requests[A],
     close = true,
   ) => {
     const owner = state.dialog;
     let operation: symbol | undefined;
-    setError("");
+    const room = s.activeRoom;
     try {
       const roomChange = action === "room-select" || action === "room-create";
       operation = state.begin(roomChange);
       const result = roomChange
         ? await snapshots.current!.changeRoom(
             () => api(action, data),
-            (result) => action === "room-select" ? result.room : result.id,
+            (result) => action === "room-select" ? (result as Results["room-select"]).room : (result as Results["room-create"]).id,
           )
         : await api(action, data);
       if (!roomChange) await refresh();
       if (close && state.ownsDialog(owner)) setDialog("");
       return result;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Workflow owns its inline error; generic actions retain independent notices.
+      if (action !== "object") reportError(action, e, owner, room);
       throw e;
     } finally {
       if (operation) state.finish(operation);
     }
   };
   const safe = (fn: () => Promise<unknown>) => () => {
-    void fn().catch(() => {});
+    const owner = state.dialog, room = s.activeRoom;
+    void Promise.resolve().then(fn).catch(e => reportError("Action", e, owner, room));
   };
   const session = (id: string) => s.sessions.find((p) => p.id === id);
   const author = (event: Event) =>
@@ -612,11 +552,12 @@ function App() {
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const data = new FormData(event.currentTarget);
-      void fn(data).catch(() => {});
+      const owner = state.dialog, room = s.activeRoom;
+      void Promise.resolve().then(() => fn(data)).catch(e => reportError("Form", e, owner, room));
     };
 
   return (
-    <div className="shell">
+    <DialogErrors.Provider value={issueList(true)}><div className="shell">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -786,9 +727,12 @@ function App() {
             </button>
           </div>
         </header>
-        {(error || connectionError) && (
+        {issueList(false)}
+        {s.health?.map(h => <div className="error-banner" role="alert" key={h.scope}>{h.scope}: {h.scope === "delivery" ? "Delivery needs attention. Inspect receipts; uncertain sends are not retried." : h.scope === "stream" ? "Live updates delayed; periodic sync continues." : "Connection unavailable. Messages remain saved on this Mac."}</div>)}
+        {connectionError && <div className="error-banner" role="alert"><span>Helper: {connectionError}</span><button className="icon" aria-label="Dismiss error" onClick={() => setConnectionError("")}><X size={15}/></button></div>}
+        {error && (
           <div className="error-banner" role="alert">
-            <span>{error || connectionError}</span>
+            <span>{error}</span>
             <button
               className="icon"
               aria-label="Dismiss error"
@@ -961,13 +905,15 @@ function App() {
                         type="checkbox"
                         checked={!!runtime.login_start}
                         onChange={(e) => {
-                          void invoke<any>("set_login_start", {
-                            enabled: e.target.checked,
-                          })
+                          const owner = state.dialog, room = s.activeRoom;
+                          const enabled = e.target.checked;
+                          void bounded(() => invoke<{login_start: boolean}>("set_login_start", {
+                            enabled,
+                          }))
                             .then((value) =>
                               setRuntime({ ...runtime, ...value }),
                             )
-                            .catch((e) => setError(String(e)));
+                            .catch((e) => reportError("Login startup", e, owner, room));
                         }}
                       />
                       Start Agent Room at login
@@ -1372,7 +1318,7 @@ function App() {
                           <p>
                             {stuck
                               ? "Reconnect or resume the exact session to deliver this message"
-                              : r.reason}
+                              : "Delivery needs attention. Check the connection and receipt state."}
                           </p>
                           <small>{target?.title}</small>
                         </div>
@@ -1387,7 +1333,7 @@ function App() {
                       <Circle size={18} />
                       <div>
                         <strong>Message needs attention</strong>
-                        <p>{o.error}</p>
+                        <p>Operation failed. Check its fields and current status before trying again.</p>
                         <small>{o.event.body.text}</small>
                       </div>
                     </div>
@@ -1684,7 +1630,7 @@ function App() {
                                       title={
                                         stuck
                                           ? "Bridge not connected · message queued until reconnect"
-                                          : r.reason
+                                          : "Delivery needs attention. Check the connection and receipt state."
                                       }
                                       className={
                                         "receipt " +
@@ -1766,7 +1712,7 @@ function App() {
                     className="composer"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      void send().catch(() => {});
+                      safe(send)();
                     }}
                   >
                     <div className="composer-target">
@@ -1826,7 +1772,7 @@ function App() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
-                          void send().catch(() => {});
+                          safe(send)();
                         }
                       }}
                     />
@@ -2059,7 +2005,7 @@ function App() {
       {dialog === "create" && (
         <Dialog title="Create room" onClose={closeDialog}>
           <form
-            onSubmit={formSubmit((d) => act("create", { name: d.get("name") }))}
+            onSubmit={formSubmit((d) => act("create", { name: String(d.get("name") || "") }))}
           >
             <p>
               This Mac will host the room. You can pair more Macs once it’s
@@ -2088,10 +2034,10 @@ function App() {
               act(
                 "join-request",
                 {
-                  url: d.get("url"),
-                  id: d.get("id"),
-                  proof: d.get("proof"),
-                  name: d.get("name"),
+                  url: String(d.get("url") || ""),
+                  id: String(d.get("id") || ""),
+                  proof: String(d.get("proof") || ""),
+                  name: String(d.get("name") || ""),
                 },
                 false,
               ),
@@ -2128,7 +2074,7 @@ function App() {
             <button
               type="button"
               className="secondary wide"
-              onClick={safe(() => act("join-finish"))}
+              onClick={safe(() => act("join-finish", {}))}
             >
               I’ve approved this Mac — finish pairing
             </button>
@@ -2207,11 +2153,11 @@ function App() {
             onSubmit={formSubmit(async (d) => {
               const owner = state.dialog;
               const result = await act("bind", {
-                app: d.get("app"),
-                title: d.get("title"),
-                native: d.get("native"),
-                directory: d.get("directory"),
-                model: d.get("model"),
+                app: String(d.get("app") || ""),
+                title: String(d.get("title") || ""),
+                native: String(d.get("native") || ""),
+                directory: String(d.get("directory") || ""),
+                model: String(d.get("model") || ""),
               }, false);
               if (!state.ownsDialog(owner)) return;
               setEditing({
@@ -2457,7 +2403,7 @@ function App() {
           }}
         />
       )}
-    </div>
+    </div></DialogErrors.Provider>
   );
 }
 function Workflow({
@@ -2473,7 +2419,7 @@ function Workflow({
   sessions: Session[];
   busy: boolean;
   onClose: () => void;
-  onSave: (data: any) => Promise<any>;
+  onSave: (data: Requests["object"]) => Promise<Results["object"]>;
 }) {
   const [kind, setKind] = useState(editing?.kind || initialKind || "work");
   const d = editing?.data || {};
@@ -2481,19 +2427,19 @@ function Workflow({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
-  const submitted = useRef<any>(null);
+  const submitted = useRef<Requests["object"] | null>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const submit = async (data: any) => {
+  const submit = async (data: Omit<Requests["object"], "event_id">) => {
     setSaving(true);
     setSaveError("");
     try {
       const id = pendingId || crypto.randomUUID();
       if (!pendingId) submitted.current = { ...data, event_id: id };
       setPendingId(id);
-      // Retrying the exact event ID is safe even after a lost enqueue response.
+      // Once acceptance is uncertain, only read status; never resend automatically.
       try {
-        await onSave(submitted.current);
+        if (!pendingId) await onSave(submitted.current!);
       } catch (e) {
         if (mounted.current && (e as { enqueueRejected?: boolean })?.enqueueRejected) {
           setPendingId(null);
@@ -2502,20 +2448,21 @@ function Workflow({
         throw e;
       }
       if (!mounted.current) return;
-      for (let attempt = 0; attempt < 12; attempt++) {
-        const result = await api("outbox-status", { id });
+      const deadline = Date.now() + 12000;
+      for (let attempt = 0; attempt < 12 && Date.now() < deadline; attempt++) {
+        const result = await bounded(() => api("outbox-status", { id }), Math.max(1, deadline - Date.now()));
         if (!mounted.current) return;
         if (result.state === "sent") { onClose(); return; }
         if (result.state === "failed" || result.state === "cancelled") {
           setPendingId(null);
-          throw Error(result.reason || "Save cancelled. Review your changes and try again.");
+          throw new ControlError("rejected", "rejected");
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
-      setSaveError("Saved on this Mac, awaiting hub confirmation. Check again before submitting another change.");
+      setSaveError("Acceptance or hub confirmation is still pending. Check status before submitting another change.");
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : String(e));
-    } finally { setSaving(false); }
+      if (mounted.current) setSaveError(visibleError(e));
+    } finally { if (mounted.current) setSaving(false); }
   };
   if (kind === "claim") return (
     <Dialog title="Claim · read-only" onClose={onClose}>
@@ -2569,7 +2516,7 @@ function Workflow({
             type: kind,
             version: (editing?.version || 0) + 1,
             data,
-          }).catch(() => {});
+          }).catch(e => setSaveError(visibleError(e)));
         }}
       >
         {saveError && <p role="alert">{saveError}</p>}
