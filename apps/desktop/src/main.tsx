@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import "./styles.css";
+import { createInteractionState } from "./interaction-state";
 import { createSnapshotController } from "./snapshot-controller";
 
 type Session = {
@@ -410,11 +411,7 @@ function App() {
     [view, setView] = useState("room"),
     [context, setContext] = useState(true),
     [query, setQuery] = useState(""),
-    [dialog, setDialog] = useState(""),
-    [busy, setBusy] = useState(false),
-    [text, setText] = useState(""),
-    [target, setTarget] = useState(""),
-    [reply, setReply] = useState<Event | null>(null),
+    [dialog, updateDialog] = useState(""),
     [pair, setPair] = useState<any>(null),
     [editing, setEditing] = useState<ObjectItem | null>(null),
     [runtime, setRuntime] = useState<any>({}),
@@ -429,8 +426,22 @@ function App() {
   const search = useRef<HTMLInputElement>(null),
     composer = useRef<HTMLTextAreaElement>(null),
     bottom = useRef<HTMLDivElement>(null);
-  const previous = useRef(0),
-    draftId = useRef(crypto.randomUUID());
+  const previous = useRef(0);
+  const [, renderInteractions] = useState(0);
+  const interactions = useRef<ReturnType<typeof createInteractionState<Event>> | null>(null);
+  if (!interactions.current) interactions.current = createInteractionState<Event>(() => renderInteractions(n => n + 1));
+  const state = interactions.current;
+  const busy = state.busy;
+  const { text, target, reply } = state.draft(s.activeRoom);
+  const setText = (text: string) => state.patch(s.activeRoom, { text });
+  const setTarget = (target: string) => state.patch(s.activeRoom, { target });
+  const setReply = (reply: Event | null) => state.patch(s.activeRoom, { reply });
+  const setDialog = (next: string) => {
+    state.openDialog();
+    updateDialog(next);
+  };
+  const dialogOwner = state.dialog;
+  const closeDialog = () => { if (state.ownsDialog(dialogOwner)) setDialog(""); };
   const snapshots = useRef<ReturnType<typeof createSnapshotController<Snapshot>> | null>(null);
   if (!snapshots.current) {
     snapshots.current = createSnapshotController<Snapshot>(
@@ -473,7 +484,7 @@ function App() {
     };
     document.addEventListener("keydown", listener);
     return () => document.removeEventListener("keydown", listener);
-  }, []);
+  }, [s.activeRoom]);
   useEffect(() => {
     if (appearance === "system") {
       document.documentElement.removeAttribute("data-theme");
@@ -497,10 +508,12 @@ function App() {
     data: Record<string, unknown> = {},
     close = true,
   ) => {
-    setBusy(true);
+    const owner = state.dialog;
+    let operation: symbol | undefined;
     setError("");
     try {
       const roomChange = action === "room-select" || action === "room-create";
+      operation = state.begin(roomChange);
       const result = roomChange
         ? await snapshots.current!.changeRoom(
             () => api(action, data),
@@ -508,13 +521,13 @@ function App() {
           )
         : await api(action, data);
       if (!roomChange) await refresh();
-      if (close) setDialog("");
+      if (close && state.ownsDialog(owner)) setDialog("");
       return result;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       throw e;
     } finally {
-      setBusy(false);
+      if (operation) state.finish(operation);
     }
   };
   const safe = (fn: () => Promise<unknown>) => () => {
@@ -571,21 +584,25 @@ function App() {
           .includes(query.toLowerCase())),
   );
   const send = async () => {
-    if (!text.trim()) return;
-    const message = text.trim();
+    if (state.busy || !text.trim()) return;
+    if (target && !s.sessions.some(p => p.id === target && p.active)) {
+      setError("Choose an active recipient or Room board before sending.");
+      return;
+    }
+    const room = s.activeRoom;
+    const draft = state.draft(room);
+    const message = draft.text.trim();
     await act(
       "send",
       {
-        id: draftId.current,
+        id: draft.id,
         text: message,
-        targets: target ? [target] : [],
-        reply_to: reply?.id,
+        targets: draft.target ? [draft.target] : [],
+        reply_to: draft.reply?.id,
       },
       false,
     );
-    setText("");
-    draftId.current = crypto.randomUUID();
-    setReply(null);
+    state.sent(room, draft.id);
     composer.current?.focus();
   };
   const activeSessions = s.sessions.filter((p) => p.active);
@@ -908,7 +925,10 @@ function App() {
                     <button
                       className="secondary"
                       onClick={safe(async () => {
-                        setPair(await act("pair-create", {}, false));
+                        const owner = state.dialog;
+                        const result = await act("pair-create", {}, false);
+                        if (!state.ownsDialog(owner)) return;
+                        setPair(result);
                         setDialog("pair");
                       })}
                     >
@@ -1763,6 +1783,9 @@ function App() {
                         onChange={(e) => setTarget(e.target.value)}
                       >
                         <option value="">Room board</option>
+                        {target && !activeSessions.some(p => p.id === target) && (
+                          <option value={target} disabled>Unavailable recipient — choose another</option>
+                        )}
                         {activeSessions.map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.title} · {appName(p.app)} · {p.device_name}
@@ -1801,7 +1824,6 @@ function App() {
                       value={text}
                       onChange={(e) => {
                         setText(e.target.value);
-                        draftId.current = crypto.randomUUID();
                       }}
                       placeholder={
                         target ? "Message this agent…" : "Message the room…"
@@ -2042,7 +2064,7 @@ function App() {
         </div>
       </div>
       {dialog === "create" && (
-        <Dialog title="Create room" onClose={() => setDialog("")}>
+        <Dialog title="Create room" onClose={closeDialog}>
           <form
             onSubmit={formSubmit((d) => act("create", { name: d.get("name") }))}
           >
@@ -2067,7 +2089,7 @@ function App() {
         </Dialog>
       )}
       {dialog === "join" && (
-        <Dialog title="Join an existing room" onClose={() => setDialog("")}>
+        <Dialog title="Join an existing room" onClose={closeDialog}>
           <form
             onSubmit={formSubmit((d) =>
               act(
@@ -2121,7 +2143,7 @@ function App() {
         </Dialog>
       )}
       {dialog === "pair" && (
-        <Dialog title="Pair another Mac" onClose={() => setDialog("")}>
+        <Dialog title="Pair another Mac" onClose={closeDialog}>
           <p>
             Open Agent Room on your other Mac and choose{" "}
             <strong>Join an existing room</strong>. This invitation expires in
@@ -2157,7 +2179,7 @@ function App() {
         </Dialog>
       )}
       {dialog === "new-room" && (
-        <Dialog title="Name this room" onClose={() => setDialog("")}>
+        <Dialog title="Name this room" onClose={closeDialog}>
           <form
             onSubmit={formSubmit(async (d) => {
               const title = String(d.get("title") || "").trim();
@@ -2186,17 +2208,19 @@ function App() {
       {dialog === "connect" && (
         <Dialog
           title="Connect an existing conversation"
-          onClose={() => setDialog("")}
+          onClose={closeDialog}
         >
           <form
             onSubmit={formSubmit(async (d) => {
+              const owner = state.dialog;
               const result = await act("bind", {
                 app: d.get("app"),
                 title: d.get("title"),
                 native: d.get("native"),
                 directory: d.get("directory"),
                 model: d.get("model"),
-              });
+              }, false);
+              if (!state.ownsDialog(owner)) return;
               setEditing({
                 id: result.id,
                 kind: "connection",
@@ -2270,7 +2294,7 @@ function App() {
       {dialog === "connection" && editing && (
         <Dialog
           title={editing.data.title || "Conversation setup"}
-          onClose={() => setDialog("")}
+          onClose={closeDialog}
         >
           <div className="setup-kind">
             <Terminal size={18} />
@@ -2336,7 +2360,7 @@ function App() {
         </Dialog>
       )}
       {dialog === "remove-connection" && editing && (
-        <Dialog title="Remove connection" onClose={() => setDialog("")}>
+        <Dialog title="Remove connection" onClose={closeDialog}>
           <p>
             Remove the connection to “{editing.data.title}”? The session is
             disconnected locally now. If the hub is unavailable, removal will
@@ -2360,11 +2384,12 @@ function App() {
       )}
       {dialog.startsWith("workflow") && (
         <Workflow
+          key={dialogOwner}
           editing={editing}
           kind={dialog.split(":")[1]}
           sessions={activeSessions}
           busy={busy}
-          onClose={() => setDialog("")}
+          onClose={closeDialog}
           onSave={(data) => act("object", data, false)}
         />
       )}

@@ -1,9 +1,27 @@
-# PICKUP — B2 ordered snapshots implemented; stop before B3
+# PICKUP — B3 scoped actions/drafts implemented; stop before B4
 
-Done: Review phases 1–7, B1 / R01 and B2 / R02 + R07 are implemented in source. B2 guards snapshot success and failure by request sequence and room generation; room-select/create invalidate old reads and reject concurrent room mutations. Cold-start helper failure now shows unavailable, never setup without a successful unconfigured snapshot. Normal polling recovers when the helper returns. Error dismissal does not clear unavailable health.
+Done: Review phases 1–7 and B1–B3 are implemented in source. B3 fixes R05/R06 with
+per-room retained text/recipient/reply/draft IDs, dialog-instance completion guards,
+and operation-set busy tracking. Bind/pair followups cannot replace newer dialogs.
+Room mutations and pending actions are mutually exclusive because the helper uses
+a global selected room. Draft retention is in-memory for this app session, not across restart.
 
-Evidence: phase6-architecture.md and phase6-browser.cjs established the ordering failure; phase1-environment.md established cold-start confusion. See b2-ordered-snapshots.md for implementation, repeatable commands and boundaries. **11 controller tests and 6 synthetic Chrome browser tests passed**. Full checks: **198 passed in 26.60s**; desktop **tsc --noEmit exit 0**. Browser tests use intercepted control responses and their own dev server, not a helper or the installed app. B1 evidence remains in b1-durable-disconnect.md.
+Evidence: phase6-architecture.md P6-02 and phase3-results.md journey 08;
+b3-scoped-actions-drafts.md describes implementation, tests and limits. **6 B3 state
++ 8 synthetic Chrome tests passed**; **17 B2 tests also passed**, combined **31/31**.
+Full checks: **198 passed in 26.52s**, desktop **tsc --noEmit exit 0**. Browser tests
+use intercepted control responses and isolated dev servers, not a helper or installed app.
+B1/B2 evidence remains in b1-durable-disconnect.md and b2-ordered-snapshots.md.
 
-Next: **Stop. B3 has not started.** In a fresh conversation, owner may authorize B3 scoped actions/drafts (R05/R06). Read AGENTS.md, REPORT.md and this note; start a fresh branch from updated main. Owner must choose per-room retained drafts versus explicit reset (report recommends per-room drafts). Generic action completion/busy state and draft/recipient handling remain unchanged. Other findings remain open.
+Next: **Stop. B4 has not started.** In a fresh conversation, owner may authorize B4
+safe workflow editing (R04, R09–R12). Read AGENTS.md, REPORT.md and this note; start
+a fresh branch from updated main. Owner must choose review invalidation policy;
+report recommends invalidation only when review artifact/version changes. Other
+findings remain open; B6 owns action-local errors and timeouts.
 
-Safety: No installed-app rebuild/replacement or live-data access. Owner controls deployment. Never commit credentials, ready.json or work/ contents. gh is at ~/.local/bin/gh. Existing Node toolchain location: /Users/irislindholm/.local/share/opencode/integrations/playwright/node_modules/node/bin; existing Playwright module is alongside node under that node_modules directory. Isolated helper Python: work/venv/bin/python (not needed for B2 browser tests).
+Safety: No installed-app rebuild/replacement or live-data access. Owner controls deployment.
+Never commit credentials, ready.json or work/ contents. gh is at ~/.local/bin/gh.
+Existing Node toolchain: /Users/irislindholm/.local/share/opencode/integrations/playwright/node_modules/node/bin;
+existing Playwright is alongside node under that node_modules directory. These are
+pre-existing test tools, not reintroduction of a retired connector. Isolated helper
+Python: work/venv/bin/python (not needed for synthetic browser tests).

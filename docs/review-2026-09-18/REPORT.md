@@ -43,6 +43,16 @@ live-data access. B2 and all other open findings remain untouched.
 
 R02 and R07 are now **FIXED in source** by B2. Request/room generation guards reject stale successes and failures; cold helper failure stays unavailable until configuration is confirmed, with automatic recovery. See [B2](b2-ordered-snapshots.md): **11 controller tests + 6 synthetic Chrome tests passed**, **198 passed in 26.60s**, desktop **tsc --noEmit exit 0**. Original findings below are historical evidence for these two IDs. No deployment or live-data access. Stop before B3; R05/R06 and all other open findings remain untouched.
 
+## B3 implementation follow-up — 2026-09-19
+
+R05 and R06 are now **FIXED in source** by B3. Per-room retained drafts include
+recipient/reply/ID; dialog-instance ownership prevents stale completion; operation IDs
+track overlapping busy state. Room mutations cannot race pending actions. See
+[B3](b3-scoped-actions-drafts.md): **6 state + 8 synthetic Chrome tests passed**, all
+**17 B2 regressions passed**, **198 passed in 26.52s**, desktop **tsc --noEmit exit 0**.
+Original R05/R06 findings below are historical evidence. Drafts are session-memory
+only. No deployment/live-data access. Stop before B4; all other open findings untouched.
+
 ## Findings register
 
 Open unless labelled **FIXED**. Duplicate phase findings are consolidated; detailed
