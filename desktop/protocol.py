@@ -320,12 +320,19 @@ class Hub(Database):
             require(data.get('artifact') and data.get('revision') and data.get('base'), 'immutable artifact, revision and base required')
             require(data.get('verdict') in ('pending', 'approved', 'changes requested'), 'review verdict required')
             require(self.db.execute('SELECT 1 FROM sessions WHERE id=? AND room=?', (data.get('reviewer'), room)).fetchone(), 'exact reviewer required')
+            artifact_changed = previous and any(previous.get(k) != data.get(k) for k in ('revision', 'artifact', 'base'))
             if previous:
                 require(data.get('reviewer') == previous.get('reviewer'), 'reviewer is immutable')
-                if any(previous.get(k) != data.get(k) for k in ('revision', 'artifact', 'base')):
+                if artifact_changed:
                     require(data['verdict'] == 'pending', 'changed artifact invalidates previous approval')
+                    data['findings'] = ''
+                elif sender != data['reviewer']:
+                    require(all(data.get(k) == previous.get(k) for k in ('verdict', 'findings')),
+                            'only exact reviewer can change verdict or findings')
             if data['verdict'] != 'pending':
-                require(sender == data['reviewer'], 'only exact reviewer can give a verdict')
+                require(sender == data['reviewer'] or (previous and not artifact_changed and
+                        all(data.get(k) == previous.get(k) for k in ('verdict', 'findings'))),
+                        'only exact reviewer can give a verdict')
                 require(data.get('checks') and data.get('findings') is not None, 'checks and findings required')
             data['self_review'] = data.get('reviewer') == (old['author'] if old else author)
         elif kind == 'decision':

@@ -10,7 +10,8 @@
     "test:interactions": "node --test ../../tests/interaction-state.test.mjs",
     "test:interactions:browser": "node --test ../../tests/interaction-browser.test.mjs",
     "build": "tsc && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:workflows:browser": "node --test ../../tests/workflow-browser.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
