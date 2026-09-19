@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import "./styles.css";
+import { createSnapshotController } from "./snapshot-controller";
 
 type Session = {
   id: string;
@@ -402,7 +403,8 @@ function Dialog({
 }
 function App() {
   const [s, setS] = useState<Snapshot>(empty),
-    [loaded, setLoaded] = useState(false),
+    [confirmed, setConfirmed] = useState(false),
+    [helperUnavailable, setHelperUnavailable] = useState(false),
     [error, setError] = useState(""),
     [connectionError, setConnectionError] = useState(""),
     [view, setView] = useState("room"),
@@ -429,23 +431,34 @@ function App() {
     bottom = useRef<HTMLDivElement>(null);
   const previous = useRef(0),
     draftId = useRef(crypto.randomUUID());
-  const refresh = async () => {
-    try {
-      const next = await api("snapshot");
-      setS({ ...empty, ...next });
-      setConnectionError("");
-      setLoaded(true);
-    } catch (e) {
-      setConnectionError(String(e));
-      setS((current) => ({ ...current, online: false }));
-      setLoaded(true);
-    }
-  };
+  const snapshots = useRef<ReturnType<typeof createSnapshotController<Snapshot>> | null>(null);
+  if (!snapshots.current) {
+    snapshots.current = createSnapshotController<Snapshot>(
+      async () => ({ ...empty, ...await api("snapshot") }),
+      (next) => {
+        setS(next);
+        setConnectionError("");
+        setHelperUnavailable(false);
+        setConfirmed(true);
+      },
+      (e) => {
+        setConnectionError(String(e));
+        setHelperUnavailable(true);
+        setS((current) => ({ ...current, online: false }));
+      },
+    );
+  }
+  const refresh = () => snapshots.current!.refresh();
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(refresh, 1800);
+    const controller = snapshots.current!;
+    controller.start();
+    void controller.refresh();
+    const timer = setInterval(() => void controller.refresh(true), 1800);
     if (isTauri()) void invoke("runtime_info").then(setRuntime);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      controller.stop();
+    };
   }, []);
   useEffect(() => {
     const listener = (e: KeyboardEvent) => {
@@ -487,8 +500,14 @@ function App() {
     setBusy(true);
     setError("");
     try {
-      const result = await api(action, data);
-      await refresh();
+      const roomChange = action === "room-select" || action === "room-create";
+      const result = roomChange
+        ? await snapshots.current!.changeRoom(
+            () => api(action, data),
+            (result) => action === "room-select" ? result.room : result.id,
+          )
+        : await api(action, data);
+      if (!roomChange) await refresh();
       if (close) setDialog("");
       return result;
     } catch (e) {
@@ -720,7 +739,7 @@ function App() {
               <span
                 className={"connection-dot " + (s.online ? "online" : "")}
               />
-              {connectionError
+              {helperUnavailable
                 ? "Local helper unavailable"
                 : s.paused
                 ? "Delivery paused"
@@ -768,14 +787,22 @@ function App() {
         )}
         {!s.online && s.configured && (
           <div className="notice">
-            {connectionError
+            {helperUnavailable
               ? "Local helper unavailable. Drafts stay in this window; keep it open and retry when the helper returns."
               : "Connection unavailable. New messages stay saved on this Mac and sync when the hub returns."}
           </div>
         )}
         <div className="main-row">
           <main>
-            {!loaded ? (
+            {!confirmed && helperUnavailable ? (
+              <div className="empty-state" role="status">
+                <h1>Local helper unavailable</h1>
+                <p>We cannot check your room configuration yet. Retrying automatically when the helper returns.</p>
+                <button className="secondary" onClick={() => void refresh()}>
+                  Retry connection
+                </button>
+              </div>
+            ) : !confirmed ? (
               <div className="empty-state">
                 <div className="brand-mark">
                   <MessageSquare />
